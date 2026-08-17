@@ -74,6 +74,29 @@ public static class LogParser
         return new TestFailure(filePath, lineNumber, errorMessage);
     }
 
+    public static TestFailure ExtractGenericError(string stepBlock)
+    {
+        var match = Regex.Match(
+            stepBlock,
+            @"(?<path>[^\s:]+\.csproj)\s*:\s*error\s+(?<code>\w+\d*)\s*:\s*(?<msg>.+?)\s*(?:\[.*\])?\s*$",
+            RegexOptions.Multiline);
+
+        if (match.Success)
+        {
+            return new TestFailure(
+                match.Groups["path"].Value,
+                null,
+                $"{match.Groups["code"].Value}: {match.Groups["msg"].Value}");
+        }
+
+        // Son çare: ##[error] satırı (örn. "Process completed with exit code 1").
+        var genericMatch = Regex.Match(stepBlock, @"##\[error\](?<msg>.+)$", RegexOptions.Multiline);
+        if (genericMatch.Success)
+            return new TestFailure(null, null, genericMatch.Groups["msg"].Value.Trim());
+
+        return new TestFailure(null, null, null);
+    }
+
     public static ErrorContext? BuildErrorContext(WorkflowJob job, IReadOnlyList<CheckRunAnnotation> annotations, string rawLog)
     {
         var failedStep = FindFailedStep(job);
@@ -97,6 +120,22 @@ public static class LogParser
                 lineNumber = ln;
                 errorMessage = msg;
                 break;
+            }
+        }
+
+        if (errorMessage is null)
+        {
+            foreach (var block in stepBlocks)
+            {
+                var (fp, ln, msg) = ExtractGenericError(block);
+                if (msg != null)
+                {
+                    matchingBlock = block;
+                    filePath = fp;
+                    lineNumber = ln;
+                    errorMessage = msg;
+                    break;
+                }
             }
         }
 

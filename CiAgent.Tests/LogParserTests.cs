@@ -91,5 +91,97 @@ public class LogParserTests
         Assert.Null(lineNumber);
         Assert.Null(errorMessage);
     }
-    
+    [Fact]
+    public void ExtractGenericError_ParsesNU1101RestoreError()
+    {
+        var stepBlock = """
+    ##[group]Run dotnet restore
+    dotnet restore
+    shell: /usr/bin/bash -e {0}
+    ##[endgroup]
+      Determining projects to restore...
+    /home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj : error NU1101: Unable to find package Bu.Paket.Kesinlikle.Yok. No packages exist with this id in source(s): nuget.org [/home/runner/work/ci-agent-pilot/ci-agent-pilot/CiPilot.slnx]
+      Failed to restore /home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj (in 983 ms).
+    ##[error]Process completed with exit code 1.
+    """;
+
+        var (filePath, lineNumber, errorMessage) = LogParser.ExtractGenericError(stepBlock);
+
+        Assert.Equal("CiPilot.Core.csproj", Path.GetFileName(filePath));
+        Assert.Null(lineNumber);
+        Assert.Contains("NU1101", errorMessage);
+        Assert.Contains("Bu.Paket.Kesinlikle.Yok", errorMessage);
+    }
+
+    [Fact]
+    public void ExtractGenericError_FallsBackToGitHubErrorAnnotation_WhenNoMsBuildErrorPresent()
+    {
+        var stepBlock = """
+    ##[group]Run ./scripts/deploy.sh
+    ./scripts/deploy.sh
+    ##[endgroup]
+    Deploying...
+    ##[error]Process completed with exit code 127.
+    """;
+
+        var (filePath, lineNumber, errorMessage) = LogParser.ExtractGenericError(stepBlock);
+
+        Assert.Null(filePath);
+        Assert.Null(lineNumber);
+        Assert.Equal("Process completed with exit code 127.", errorMessage);
+    }
+
+    [Fact]
+    public void ExtractGenericError_ReturnsNullsWhenNoErrorPresent()
+    {
+        var stepBlock = """
+    ##[group]Run dotnet restore
+    dotnet restore
+    Restored project.csproj
+    """;
+
+        var (filePath, lineNumber, errorMessage) = LogParser.ExtractGenericError(stepBlock);
+
+        Assert.Null(filePath);
+        Assert.Null(lineNumber);
+        Assert.Null(errorMessage);
+    }
+
+    [Fact]
+    public void BuildErrorContext_FallsBackToGenericError_WhenTestFailureFormatDoesNotMatch()
+    {
+        var job = new Octokit.WorkflowJob(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow,
+            startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: "build-test",
+            steps: new List<Octokit.WorkflowJobStep>
+            {
+            new(name: "Restore",
+                status: Octokit.WorkflowJobStatus.Completed,
+                conclusion: Octokit.WorkflowJobConclusion.Failure,
+                number: 3,
+                startedAt: DateTimeOffset.UtcNow,
+                completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "",
+            labels: new List<string>());
+
+        var log = """
+    ##[group]Run dotnet restore
+    dotnet restore
+    ##[endgroup]
+    /home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj : error NU1101: Unable to find package Bu.Paket.Kesinlikle.Yok. No packages exist with this id in source(s): nuget.org [/home/runner/work/ci-agent-pilot/ci-agent-pilot/CiPilot.slnx]
+    ##[error]Process completed with exit code 1.
+    """;
+
+        var context = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        Assert.NotNull(context!.RawStepLog);
+        Assert.Contains("NU1101", context.ErrorMessage);
+    }
 }
