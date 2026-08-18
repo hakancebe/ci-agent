@@ -22,10 +22,32 @@ if (missing.Count > 0)
     return;
 }
 
-// --- Hedef owner/repo/run ID: argümanla override edilebilir, yoksa varsayılan kullanılır ---
-var owner = args.Length > 0 ? args[0] : "hakancebe";
-var repo = args.Length > 1 ? args[1] : "ci-agent-pilot";
-var runId = args.Length > 2 && long.TryParse(args[2], out var parsedRunId) ? parsedRunId : 30900485652;
+// --- Hedef owner/repo/run ID ---
+// Öncelik sırası: komut satırı argümanı > env var > varsayılan.
+// Lokal test için `dotnet run -- owner repo runId` aynen çalışmaya devam eder;
+// CI'da workflow bu değerleri workflow_run payload'ından env var olarak besler.
+string Resolve(int index, string envName, string fallback)
+{
+    if (args.Length > index && !string.IsNullOrWhiteSpace(args[index]))
+        return args[index];
+
+    var fromEnv = Environment.GetEnvironmentVariable(envName);
+    return string.IsNullOrWhiteSpace(fromEnv) ? fallback : fromEnv;
+}
+
+var owner = Resolve(0, "CI_AGENT_OWNER", "hakancebe");
+var repo = Resolve(1, "CI_AGENT_REPO", "ci-agent-pilot");
+var runIdRaw = Resolve(2, "CI_AGENT_RUN_ID", "30900485652");
+
+if (!long.TryParse(runIdRaw, out var runId))
+{
+    // CI'da sessizce eski bir run'ı analiz etmektense hemen patlamak daha doğru.
+    Console.WriteLine($"HATA: Geçersiz run ID: '{runIdRaw}'. Sayısal bir değer bekleniyor.");
+    Environment.Exit(1);
+    return;
+}
+
+Console.WriteLine($"Hedef: {owner}/{repo} run {runId}");
 
 // --- Adım 1-2: Octokit ile job/annotation/log çekme, ErrorContext üretme ---
 var github = new GitHubService(githubToken!);
@@ -55,7 +77,7 @@ var errorContext = LogParser.BuildErrorContext(failedJob, annotations, log);
 
 if (errorContext is null)
 {
-    Console.WriteLine($"HATA: '{failedJob.Name}' job'ında başarısız bir step bulunamadı, ntext üretilemedi.");
+    Console.WriteLine($"HATA: '{failedJob.Name}' job'ında başarısız bir step bulunamadı, ErrorContext üretilemedi.");
     return;
 }
 
