@@ -102,7 +102,6 @@ public static class LogParser
         var failedStep = FindFailedStep(job);
         if (failedStep == null)
             return null;
-
         var stepBlocks = ExtractStepBlocks(rawLog);
 
         string? matchingBlock = null;
