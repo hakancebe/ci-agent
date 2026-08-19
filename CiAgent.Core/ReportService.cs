@@ -91,7 +91,7 @@ public class ReportService
             return null;
 
         var open = pulls.FirstOrDefault(p => p.State == ItemState.Open);
-        return (open ?? pulls[0]).Number;
+        return null;
     }
 
     // --- PR yorumu (Issue Comment API) --------------------------------
