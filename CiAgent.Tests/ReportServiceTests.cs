@@ -1,3 +1,4 @@
+using System.Reflection;
 using CiAgent.Core;
 using Moq;
 using Octokit;
@@ -6,6 +7,18 @@ namespace CiAgent.Tests;
 
 public class ReportServiceTests
 {
+    // CommitPullRequest.State'in setter'ı protected (Octokit sınıfı dışarıdan
+    // sadece constructor ile doldurulmak üzere tasarlanmış), o yüzden "State = Open"
+    // şeklinde object initializer ile atanamıyor. Reflection ile setliyoruz.
+    private static CommitPullRequest OpenPullRequest(int number)
+    {
+        var pr = new CommitPullRequest(number);
+        typeof(CommitPullRequest)
+            .GetProperty(nameof(CommitPullRequest.State))!
+            .SetValue(pr, new StringEnum<ItemState>(ItemState.Open));
+        return pr;
+    }
+
     private static ErrorContext SampleContext() => new()
     {
         JobName = "build",
@@ -127,7 +140,7 @@ public class ReportServiceTests
         var repoCommitsClient = new Mock<IRepositoryCommitsClient>();
         repoCommitsClient
             .Setup(x => x.PullRequests("owner", "repo", "sha123"))
-            .ReturnsAsync(new List<CommitPullRequest> { new(42) }); // GET .../commits/{sha}/pulls -> CommitPullRequest (PullRequest değil!)
+            .ReturnsAsync(new List<CommitPullRequest> { OpenPullRequest(42) }); // GET .../commits/{sha}/pulls -> CommitPullRequest (PullRequest değil!)
 
         var repositoriesClient = new Mock<IRepositoriesClient>();
         repositoriesClient.Setup(x => x.Commit).Returns(repoCommitsClient.Object);
@@ -169,7 +182,7 @@ public class ReportServiceTests
         var repoCommitsClient = new Mock<IRepositoryCommitsClient>();
         repoCommitsClient
             .Setup(x => x.PullRequests("owner", "repo", "sha123"))
-            .ReturnsAsync(new List<CommitPullRequest> { new(42) });
+            .ReturnsAsync(new List<CommitPullRequest> { OpenPullRequest(42) });
 
         var repositoriesClient = new Mock<IRepositoriesClient>();
         repositoriesClient.Setup(x => x.Commit).Returns(repoCommitsClient.Object);
