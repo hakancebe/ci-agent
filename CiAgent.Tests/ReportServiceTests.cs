@@ -19,6 +19,23 @@ public class ReportServiceTests
         return pr;
     }
 
+    // FindPullRequestNumberAsync'in birden-fazla-PR ayıklama mantığını test edebilmek
+    // için Head (GitReference) ve UpdatedAt de gerekiyor; ikisinin de setter'ı protected,
+    // OpenPullRequest'teki gibi reflection ile dolduruyoruz.
+    private static CommitPullRequest PullRequestWithHead(
+        int number, string headSha, DateTimeOffset updatedAt, ItemState state = ItemState.Open)
+    {
+        var pr = new CommitPullRequest(number);
+        var head = new GitReference(null!, null!, null!, null!, headSha, null!, null!);
+
+        typeof(CommitPullRequest).GetProperty(nameof(CommitPullRequest.Head))!.SetValue(pr, head);
+        typeof(CommitPullRequest).GetProperty(nameof(CommitPullRequest.UpdatedAt))!.SetValue(pr, updatedAt);
+        typeof(CommitPullRequest).GetProperty(nameof(CommitPullRequest.State))!
+            .SetValue(pr, new StringEnum<ItemState>(state));
+
+        return pr;
+    }
+
     private static ErrorContext SampleContext() => new()
     {
         JobName = "build",
@@ -207,6 +224,87 @@ public class ReportServiceTests
         issueCommentsClient.Verify(
             x => x.Create(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task ReportAsync_BirdenFazlaPrDonerse_HeadSHAsiTamEslesenTercihEdilir()
+    {
+        var now = DateTimeOffset.UtcNow;
+        // PR 10: bu SHA sadece atası (stacked PR / rebase sonrası eski geçmiş) - HEAD'i farklı bir commit.
+        var ancestorOnlyPr = PullRequestWithHead(10, headSha: "baska-bir-sha", updatedAt: now.AddMinutes(5));
+        // PR 42: bu SHA'nın gerçek HEAD'i olduğu PR.
+        var exactMatchPr = PullRequestWithHead(42, headSha: "sha123", updatedAt: now);
+
+        var repoCommitsClient = new Mock<IRepositoryCommitsClient>();
+        repoCommitsClient
+            .Setup(x => x.PullRequests("owner", "repo", "sha123"))
+            // Bilerek ancestor-only olanı önce koyduk: eski "FirstOrDefault" mantığı
+            // yanlışlıkla PR 10'u seçerdi.
+            .ReturnsAsync(new List<CommitPullRequest> { ancestorOnlyPr, exactMatchPr });
+
+        var repositoriesClient = new Mock<IRepositoriesClient>();
+        repositoriesClient.Setup(x => x.Commit).Returns(repoCommitsClient.Object);
+
+        var issueCommentsClient = new Mock<IIssueCommentsClient>();
+        issueCommentsClient
+            .Setup(x => x.GetAllForIssue("owner", "repo", 42))
+            .ReturnsAsync(new List<IssueComment>());
+
+        var issuesClient = new Mock<IIssuesClient>();
+        issuesClient.Setup(x => x.Comment).Returns(issueCommentsClient.Object);
+
+        var gitHubClient = new Mock<IGitHubClient>();
+        gitHubClient.Setup(x => x.Repository).Returns(repositoriesClient.Object);
+        gitHubClient.Setup(x => x.Issue).Returns(issuesClient.Object);
+
+        var service = new ReportService(gitHubClient.Object);
+
+        await service.ReportAsync(SampleResult(), SampleContext(), "owner", "repo", "sha123", runId: 555);
+
+        issueCommentsClient.Verify(
+            x => x.Create("owner", "repo", 42, It.IsAny<string>()), Times.Once);
+        issueCommentsClient.Verify(
+            x => x.Create("owner", "repo", 10, It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ReportAsync_AyniHeadShayiPaylasanBirdenFazlaAcikPrVarsa_EnSonGuncelleneniSecer()
+    {
+        var now = DateTimeOffset.UtcNow;
+        // İki branch tam olarak aynı commit'te (örn. biri diğerinden hiç yeni commit
+        // eklemeden dallanmış), ikisinin de HEAD'i "sha123". Eski satırı önce koyuyoruz
+        // ki test, sadece API sırasına değil UpdatedAt'e göre seçildiğini kanıtlasın.
+        var olderPr = PullRequestWithHead(10, headSha: "sha123", updatedAt: now.AddHours(-1));
+        var newerPr = PullRequestWithHead(42, headSha: "sha123", updatedAt: now);
+
+        var repoCommitsClient = new Mock<IRepositoryCommitsClient>();
+        repoCommitsClient
+            .Setup(x => x.PullRequests("owner", "repo", "sha123"))
+            .ReturnsAsync(new List<CommitPullRequest> { olderPr, newerPr });
+
+        var repositoriesClient = new Mock<IRepositoriesClient>();
+        repositoriesClient.Setup(x => x.Commit).Returns(repoCommitsClient.Object);
+
+        var issueCommentsClient = new Mock<IIssueCommentsClient>();
+        issueCommentsClient
+            .Setup(x => x.GetAllForIssue("owner", "repo", 42))
+            .ReturnsAsync(new List<IssueComment>());
+
+        var issuesClient = new Mock<IIssuesClient>();
+        issuesClient.Setup(x => x.Comment).Returns(issueCommentsClient.Object);
+
+        var gitHubClient = new Mock<IGitHubClient>();
+        gitHubClient.Setup(x => x.Repository).Returns(repositoriesClient.Object);
+        gitHubClient.Setup(x => x.Issue).Returns(issuesClient.Object);
+
+        var service = new ReportService(gitHubClient.Object);
+
+        await service.ReportAsync(SampleResult(), SampleContext(), "owner", "repo", "sha123", runId: 555);
+
+        issueCommentsClient.Verify(
+            x => x.Create("owner", "repo", 42, It.IsAny<string>()), Times.Once);
+        issueCommentsClient.Verify(
+            x => x.Create("owner", "repo", 10, It.IsAny<string>()), Times.Never);
     }
 
     [Fact]
