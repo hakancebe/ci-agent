@@ -1,4 +1,5 @@
 using Octokit;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace CiAgent.Core;
@@ -58,35 +59,76 @@ public static class LogParser
         return blocks;
     }
 
+    // Bir step bloğunda birden fazla test aynı anda fail olabilir (xUnit hepsini
+    // sırayla listeler). Regex.Matches ile tamamını yakalıyoruz; tek sonuç
+    // döndüren ExtractTestFailure bunun üzerine kurulu (geriye dönük uyumluluk için).
+    private static readonly Regex TestFailureRegex = new(
+        @"Failed\s+(?<name>\S+)\s*\[.*?\]\s*Error Message:\s*(?<msg>.+?)Stack Trace:\s*(?<stack>.*?)(?=\r?\n\s*Failed\s+\S+\s*\[|\r?\n\s*Failed!\s*-|\z)",
+        RegexOptions.Singleline);
+
+    private static readonly Regex StackTraceFileLineRegex = new(
+        @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)");
+
+    private sealed record NamedTestFailure(string Name, string? FilePath, int? LineNumber, string Message);
+
+    private static List<NamedTestFailure> ExtractNamedTestFailures(string stepBlock)
+    {
+        var failures = new List<NamedTestFailure>();
+
+        foreach (Match m in TestFailureRegex.Matches(stepBlock))
+        {
+            var stackMatch = StackTraceFileLineRegex.Match(m.Groups["stack"].Value);
+            failures.Add(new NamedTestFailure(
+                m.Groups["name"].Value,
+                stackMatch.Success ? stackMatch.Groups[1].Value : null,
+                stackMatch.Success ? int.Parse(stackMatch.Groups[2].Value) : null,
+                m.Groups["msg"].Value.Trim()));
+        }
+
+        return failures;
+    }
+
     //log dosyasının kendisi
     public static TestFailure ExtractTestFailure(string stepBlock)
     {
-        var failedMatch = Regex.Match(stepBlock, @"Failed\s+(\S+)\s*\[.*?\]\s*Error Message:\s*(.+?)Stack Trace:", RegexOptions.Singleline);
-        if (!failedMatch.Success)
+        var failures = ExtractNamedTestFailures(stepBlock);
+        if (failures.Count == 0)
             return new TestFailure(null, null, null);
 
-        var errorMessage = failedMatch.Groups[2].Value.Trim();
-
-        var stackTraceMatch = Regex.Match(stepBlock, @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)");
-        string? filePath = stackTraceMatch.Success ? stackTraceMatch.Groups[1].Value : null;
-        int? lineNumber = stackTraceMatch.Success ? int.Parse(stackTraceMatch.Groups[2].Value) : null;
-
-        return new TestFailure(filePath, lineNumber, errorMessage);
+        var first = failures[0];
+        return new TestFailure(first.FilePath, first.LineNumber, first.Message);
     }
 
     public static TestFailure ExtractGenericError(string stepBlock)
     {
-        var match = Regex.Match(
+        // 1) NuGet/restore tarzı: "xxx.csproj : error CODE: mesaj"
+        var restoreMatch = Regex.Match(
             stepBlock,
             @"(?<path>[^\s:]+\.csproj)\s*:\s*error\s+(?<code>\w+\d*)\s*:\s*(?<msg>.+?)\s*(?:\[.*\])?\s*$",
             RegexOptions.Multiline);
 
-        if (match.Success)
+        if (restoreMatch.Success)
         {
             return new TestFailure(
-                match.Groups["path"].Value,
+                restoreMatch.Groups["path"].Value,
                 null,
-                $"{match.Groups["code"].Value}: {match.Groups["msg"].Value}");
+                $"{restoreMatch.Groups["code"].Value}: {restoreMatch.Groups["msg"].Value}");
+        }
+
+        // 2) C# derleyici tarzı: "Dosya.cs(satır,kolon): error CODE: mesaj".
+        // Path karakter sınıfı bilinçli olarak dar tutuldu ([\w./-]) ki "##[error]"
+        // gibi önekler path'e karışmasın.
+        var compilerMatch = Regex.Match(
+            stepBlock,
+            @"(?<path>[\w./-]+\.cs)\((?<line>\d+),\d+\)\s*:\s*error\s+(?<code>\w+\d*)\s*:\s*(?<msg>.+?)\s*(?:\[.*\])?\s*$",
+            RegexOptions.Multiline);
+
+        if (compilerMatch.Success)
+        {
+            return new TestFailure(
+                compilerMatch.Groups["path"].Value,
+                int.Parse(compilerMatch.Groups["line"].Value),
+                $"{compilerMatch.Groups["code"].Value}: {compilerMatch.Groups["msg"].Value}");
         }
 
         // Son çare: ##[error] satırı (örn. "Process completed with exit code 1").
@@ -112,13 +154,11 @@ public static class LogParser
 
         foreach (var block in stepBlocks)
         {
-            var (fp, ln, msg) = ExtractTestFailure(block);
-            if (msg != null)
+            var failures = ExtractNamedTestFailures(block);
+            if (failures.Count > 0)
             {
-                matchingBlock = block;
-                filePath = fp;
-                lineNumber = ln;
-                errorMessage = msg;
+                matchingBlock = TrimToTestSummary(block);
+                (filePath, lineNumber, errorMessage) = CombineTestFailures(failures);
                 break;
             }
         }
@@ -139,6 +179,11 @@ public static class LogParser
             }
         }
 
+        // Başarısız adımdan sonraki "Post job cleanup" vb. içerik hatayla ilgisiz;
+        // LLM'e gereksiz gürültü göndermemek için kırpıyoruz.
+        if (matchingBlock != null)
+            matchingBlock = TrimPostJobNoise(matchingBlock);
+
         var filteredAnnotations = FilterAnnotations(annotations)
             .Select(a => $"{a.Path}:{a.StartLine} - {a.Message}")
             .ToList();
@@ -153,6 +198,49 @@ public static class LogParser
             LineNumber = lineNumber,
             ErrorMessage = errorMessage
         };
+    }
+
+    // Aynı adımda birden fazla test fail olduğunda hiçbirini gizlemeden hepsini
+    // tek bir ErrorMessage'da toplar. Üst seviye FilePath/LineNumber, konumu
+    // bilinen ilk test'ten alınır; ama her testin kendi dosya:satır bilgisi de
+    // mesaj içinde ayrıca yer alır.
+    private static (string? FilePath, int? LineNumber, string ErrorMessage) CombineTestFailures(
+        List<NamedTestFailure> failures)
+    {
+        if (failures.Count == 1)
+        {
+            var only = failures[0];
+            return (only.FilePath, only.LineNumber, only.Message);
+        }
+
+        var withLocation = failures.FirstOrDefault(f => f.FilePath != null);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"{failures.Count} test başarısız oldu:");
+        for (var i = 0; i < failures.Count; i++)
+        {
+            var f = failures[i];
+            var location = f.FilePath != null ? $" ({f.FilePath}:{f.LineNumber})" : "";
+            sb.AppendLine();
+            sb.AppendLine($"{i + 1}) {f.Name}{location}");
+            sb.AppendLine($"   {f.Message}");
+        }
+
+        return (withLocation?.FilePath, withLocation?.LineNumber, sb.ToString().TrimEnd());
+    }
+
+    private static string TrimToTestSummary(string stepBlock)
+    {
+        var summaryMatch = Regex.Match(stepBlock, @"^.*Failed!\s*-\s*Failed:.*$", RegexOptions.Multiline);
+        return summaryMatch.Success
+            ? stepBlock[..(summaryMatch.Index + summaryMatch.Length)]
+            : stepBlock;
+    }
+
+    private static string TrimPostJobNoise(string stepBlock)
+    {
+        var idx = stepBlock.IndexOf("Post job cleanup.", StringComparison.Ordinal);
+        return idx >= 0 ? stepBlock[..idx].TrimEnd() : stepBlock;
     }
 
 }

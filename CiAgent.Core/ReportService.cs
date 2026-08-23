@@ -80,8 +80,15 @@ public class ReportService
     /// GET /repos/{owner}/{repo}/commits/{sha}/pulls (Octokit: Repository.Commit.PullRequests).
     /// workflow_run payload'ındaki pull_requests alanına bilerek bakmıyoruz: fork PR'larda
     /// GitHub bu alanı boş dönebiliyor, bu endpoint ise fork PR'lar dahil güvenilir çalışıyor.
-    /// Birden fazla PR dönerse (rebase/force-push sonrası SHA birden fazla PR'da görünebilir)
-    /// açık olanı tercih ediyoruz, yoksa ilkini.
+    ///
+    /// Bu endpoint headSha'yı sadece PR'ın HEAD'i olduğu için değil, PR'ın commit
+    /// geçmişinde bir ATA (ancestor) olarak geçtiği için de eşleştirebiliyor (örn.
+    /// stacked PR'lar, ya da rebase/force-push sonrası eski SHA'nın hâlâ başka bir
+    /// branch/PR'ın geçmişinde yer alması). Bu yüzden önce headSha'nın gerçekten HEAD'i
+    /// olduğu PR'ları tercih ediyoruz; hiçbiri tam eşleşmiyorsa tüm adaylara bakıyoruz.
+    /// Birden fazla açık aday kalırsa (örn. iki branch aynı commit'i paylaşıyor), en son
+    /// güncellenen PR'ı seçerek deterministik bir sonuç garanti ediyoruz — API'nin
+    /// döndürdüğü sıraya (garantisi olmayan) güvenmiyoruz.
     /// </summary>
     private async Task<int?> FindPullRequestNumberAsync(string owner, string repo, string headSha)
     {
@@ -90,8 +97,15 @@ public class ReportService
         if (pulls.Count == 0)
             return null;
 
-        var open = pulls.FirstOrDefault(p => p.State == ItemState.Open);
-        return null;
+        var exactHeadMatches = pulls.Where(p => p.Head?.Sha == headSha).ToList();
+        var candidates = exactHeadMatches.Count > 0 ? exactHeadMatches : pulls;
+
+        var open = candidates
+            .Where(p => p.State == ItemState.Open)
+            .OrderByDescending(p => p.UpdatedAt)
+            .FirstOrDefault();
+
+        return open?.Number;
     }
 
     // --- PR yorumu (Issue Comment API) --------------------------------
