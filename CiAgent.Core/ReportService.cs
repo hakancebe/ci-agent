@@ -89,6 +89,11 @@ public class ReportService
     /// Birden fazla açık aday kalırsa (örn. iki branch aynı commit'i paylaşıyor), en son
     /// güncellenen PR'ı seçerek deterministik bir sonuç garanti ediyoruz — API'nin
     /// döndürdüğü sıraya (garantisi olmayan) güvenmiyoruz.
+    ///
+    /// Draft PR'lar bilerek hariç tutuluyor: henüz "ready for review" olmayan, aktif
+    /// geliştirme sürecindeki bir dala her push'ta agent yorumu düşmesi gürültü yaratır.
+    /// Draft PR'da eşleşme bulunamazsa çağıran taraf commit yorumuna (daha sessiz kanal)
+    /// düşer; PR "Ready for review"a alınınca (Draft=false) tekrar bu yola girer.
     /// </summary>
     private async Task<int?> FindPullRequestNumberAsync(string owner, string repo, string headSha)
     {
@@ -101,7 +106,7 @@ public class ReportService
         var candidates = exactHeadMatches.Count > 0 ? exactHeadMatches : pulls;
 
         var open = candidates
-            .Where(p => p.State == ItemState.Open)
+            .Where(p => p.State == ItemState.Open && !p.Draft)
             .OrderByDescending(p => p.UpdatedAt)
             .FirstOrDefault();
 
