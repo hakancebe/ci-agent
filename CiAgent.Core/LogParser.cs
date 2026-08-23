@@ -20,7 +20,7 @@ public static class LogParser
             .GroupBy(a => (a.Path, a.StartLine, a.Message))
             .Select(g => g.First())
             .ToList();
-    }
+    }   
     public static string StripTimestamp(string logLine)
     {
         return Regex.Replace(logLine, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s", "");
@@ -115,7 +115,7 @@ public static class LogParser
             var (fp, ln, msg) = ExtractTestFailure(block);
             if (msg != null)
             {
-                matchingBlock = block;
+                matchingBlock = TrimToTestSummary(block);  // ← değişiklik burada
                 filePath = fp;
                 lineNumber = ln;
                 errorMessage = msg;
@@ -153,6 +153,14 @@ public static class LogParser
             LineNumber = lineNumber,
             ErrorMessage = errorMessage
         };
+    }
+
+    private static string TrimToTestSummary(string stepBlock)
+    {
+        var summaryMatch = Regex.Match(stepBlock, @"^.*Failed!\s*-\s*Failed:.*$", RegexOptions.Multiline);
+        return summaryMatch.Success
+            ? stepBlock[..(summaryMatch.Index + summaryMatch.Length)]
+            : stepBlock;
     }
 
 }
