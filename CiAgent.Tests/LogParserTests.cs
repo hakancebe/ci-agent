@@ -148,6 +148,127 @@ public class LogParserTests
     }
 
     [Fact]
+    public void ExtractGenericError_ParsesCSharpCompilerError()
+    {
+        var stepBlock = """
+    ##[group]Run dotnet build --no-restore -c Release
+    dotnet build --no-restore -c Release
+    ##[endgroup]
+    ##[error]/home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/Calculator.cs(5,42): error CS1002: ; expected [/home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj]
+
+    Build FAILED.
+    """;
+
+        var (filePath, lineNumber, errorMessage) = LogParser.ExtractGenericError(stepBlock);
+
+        Assert.Equal("Calculator.cs", Path.GetFileName(filePath));
+        Assert.Equal(5, lineNumber);
+        Assert.Contains("CS1002", errorMessage);
+        Assert.Contains("; expected", errorMessage);
+    }
+
+    [Fact]
+    public void BuildErrorContext_CombinesAllFailingTests_WhenMultipleTestsFailInSameStep()
+    {
+        var job = new Octokit.WorkflowJob(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow,
+            startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: "build-test",
+            steps: new List<Octokit.WorkflowJobStep>
+            {
+            new(name: "Test",
+                status: Octokit.WorkflowJobStatus.Completed,
+                conclusion: Octokit.WorkflowJobConclusion.Failure,
+                number: 4,
+                startedAt: DateTimeOffset.UtcNow,
+                completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "",
+            labels: new List<string>());
+
+        var log = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [28 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+    Expected: 350
+    Actual:   4
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+      Failed CiPilot.Core.Tests.CalculatorTests.ThrowsUnexpectedException [< 1 ms]
+      Error Message:
+       System.InvalidOperationException : Beklenmeyen hata
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.ThrowsUnexpectedException() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 25
+
+    Failed!  - Failed:     2, Passed:     1, Skipped:     0, Total:     3, Duration: 122 ms - CiPilot.Core.Tests.dll (net8.0)
+    Post job cleanup.
+    [command]/usr/bin/git version
+    """;
+
+        var context = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        // Her iki testin adı ve mesajı da ErrorMessage'da yer almalı - hiçbiri gizlenmemeli.
+        Assert.Contains("Add_ReturnsSum", context!.ErrorMessage);
+        Assert.Contains("ThrowsUnexpectedException", context.ErrorMessage);
+        Assert.Contains("InvalidOperationException", context.ErrorMessage);
+        Assert.Contains("Values differ", context.ErrorMessage);
+        // Post job cleanup gürültüsü RawStepLog'a sızmamalı.
+        Assert.DoesNotContain("Post job cleanup", context.RawStepLog);
+    }
+
+    [Fact]
+    public void BuildErrorContext_TrimsPostJobCleanupNoise_FromGenericErrorBlock()
+    {
+        var job = new Octokit.WorkflowJob(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow,
+            startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: "deploy",
+            steps: new List<Octokit.WorkflowJobStep>
+            {
+            new(name: "Fake deploy",
+                status: Octokit.WorkflowJobStatus.Completed,
+                conclusion: Octokit.WorkflowJobConclusion.Failure,
+                number: 2,
+                startedAt: DateTimeOffset.UtcNow,
+                completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "",
+            labels: new List<string>());
+
+        var log = """
+    ##[group]Run echo "Deploying..."
+    echo "Deploying..."
+    ./scripts/deploy.sh
+    ##[endgroup]
+    Deploying...
+    ##[error]Process completed with exit code 1.
+    Node 20 is being deprecated.
+    Post job cleanup.
+    [command]/usr/bin/git version
+    Cleaning up orphan processes
+    """;
+
+        var context = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        Assert.DoesNotContain("Post job cleanup", context!.RawStepLog);
+        Assert.DoesNotContain("orphan processes", context.RawStepLog);
+        Assert.Contains("exit code 1", context.RawStepLog);
+    }
+
+    [Fact]
     public void BuildErrorContext_FallsBackToGenericError_WhenTestFailureFormatDoesNotMatch()
     {
         var job = new Octokit.WorkflowJob(

@@ -81,7 +81,7 @@ public class ReportService
     /// workflow_run payload'ındaki pull_requests alanına bilerek bakmıyoruz: fork PR'larda
     /// GitHub bu alanı boş dönebiliyor, bu endpoint ise fork PR'lar dahil güvenilir çalışıyor.
     /// Birden fazla PR dönerse (rebase/force-push sonrası SHA birden fazla PR'da görünebilir)
-    /// yalnızca açık (Open) olanı tercih ediyoruz; açık PR yoksa null dönüyoruz.
+    /// açık PR yoksa null dönüyoruz.
     /// </summary>
     private async Task<int?> FindPullRequestNumberAsync(string owner, string repo, string headSha)
     {
