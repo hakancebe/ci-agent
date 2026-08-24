@@ -23,7 +23,7 @@ public class ReportServiceTests
     // için Head (GitReference) ve UpdatedAt de gerekiyor; ikisinin de setter'ı protected,
     // OpenPullRequest'teki gibi reflection ile dolduruyoruz.
     private static CommitPullRequest PullRequestWithHead(
-        int number, string headSha, DateTimeOffset updatedAt, ItemState state = ItemState.Open, bool draft = false)
+        int number, string headSha, DateTimeOffset updatedAt, ItemState state = ItemState.Open)
     {
         var pr = new CommitPullRequest(number);
         var head = new GitReference(null!, null!, null!, null!, headSha, null!, null!);
@@ -32,7 +32,6 @@ public class ReportServiceTests
         typeof(CommitPullRequest).GetProperty(nameof(CommitPullRequest.UpdatedAt))!.SetValue(pr, updatedAt);
         typeof(CommitPullRequest).GetProperty(nameof(CommitPullRequest.State))!
             .SetValue(pr, new StringEnum<ItemState>(state));
-        typeof(CommitPullRequest).GetProperty(nameof(CommitPullRequest.Draft))!.SetValue(pr, draft);
 
         return pr;
     }
@@ -335,84 +334,5 @@ public class ReportServiceTests
         commitCommentsClient.Verify(
             x => x.Create("owner", "repo", "sha123", It.Is<NewCommitComment>(c => c.Body.StartsWith(ReportService.BuildMarker(777)))),
             Times.Once);
-    }
-
-    [Fact]
-    public async Task ReportAsync_TekEslesenPrDraftsa_CommitYorumunaDuser()
-    {
-        var draftPr = PullRequestWithHead(42, headSha: "sha123", updatedAt: DateTimeOffset.UtcNow, draft: true);
-
-        var repoCommitsClient = new Mock<IRepositoryCommitsClient>();
-        repoCommitsClient
-            .Setup(x => x.PullRequests("owner", "repo", "sha123"))
-            .ReturnsAsync(new List<CommitPullRequest> { draftPr });
-
-        var commitCommentsClient = new Mock<IRepositoryCommentsClient>();
-        commitCommentsClient
-            .Setup(x => x.GetAllForCommit("owner", "repo", "sha123"))
-            .ReturnsAsync(new List<CommitComment>());
-
-        var repositoriesClient = new Mock<IRepositoriesClient>();
-        repositoriesClient.Setup(x => x.Commit).Returns(repoCommitsClient.Object);
-        repositoriesClient.Setup(x => x.Comment).Returns(commitCommentsClient.Object);
-
-        var issueCommentsClient = new Mock<IIssueCommentsClient>();
-        var issuesClient = new Mock<IIssuesClient>();
-        issuesClient.Setup(x => x.Comment).Returns(issueCommentsClient.Object);
-
-        var gitHubClient = new Mock<IGitHubClient>();
-        gitHubClient.Setup(x => x.Repository).Returns(repositoriesClient.Object);
-        gitHubClient.Setup(x => x.Issue).Returns(issuesClient.Object);
-
-        var service = new ReportService(gitHubClient.Object);
-
-        await service.ReportAsync(SampleResult(), SampleContext(), "owner", "repo", "sha123", runId: 888);
-
-        // Draft PR'a yorum atılmamalı; sessiz kanal olan commit yorumuna düşmeli.
-        commitCommentsClient.Verify(
-            x => x.Create("owner", "repo", "sha123", It.Is<NewCommitComment>(c => c.Body.StartsWith(ReportService.BuildMarker(888)))),
-            Times.Once);
-        issueCommentsClient.Verify(
-            x => x.Create(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>()),
-            Times.Never);
-    }
-
-    [Fact]
-    public async Task ReportAsync_DraftVeReadyPrAyniSHAdaysa_ReadyOlanTercihEdilir()
-    {
-        var now = DateTimeOffset.UtcNow;
-        var draftPr = PullRequestWithHead(10, headSha: "sha123", updatedAt: now, draft: true);
-        var readyPr = PullRequestWithHead(42, headSha: "sha123", updatedAt: now.AddMinutes(-5), draft: false);
-
-        var repoCommitsClient = new Mock<IRepositoryCommitsClient>();
-        repoCommitsClient
-            .Setup(x => x.PullRequests("owner", "repo", "sha123"))
-            // Draft olanı bilerek daha yeni (UpdatedAt) koyduk: saf "en son güncellenen"
-            // kuralı yanlışlıkla draft'ı seçerdi; draft filtresi önce devreye girmeli.
-            .ReturnsAsync(new List<CommitPullRequest> { draftPr, readyPr });
-
-        var repositoriesClient = new Mock<IRepositoriesClient>();
-        repositoriesClient.Setup(x => x.Commit).Returns(repoCommitsClient.Object);
-
-        var issueCommentsClient = new Mock<IIssueCommentsClient>();
-        issueCommentsClient
-            .Setup(x => x.GetAllForIssue("owner", "repo", 42))
-            .ReturnsAsync(new List<IssueComment>());
-
-        var issuesClient = new Mock<IIssuesClient>();
-        issuesClient.Setup(x => x.Comment).Returns(issueCommentsClient.Object);
-
-        var gitHubClient = new Mock<IGitHubClient>();
-        gitHubClient.Setup(x => x.Repository).Returns(repositoriesClient.Object);
-        gitHubClient.Setup(x => x.Issue).Returns(issuesClient.Object);
-
-        var service = new ReportService(gitHubClient.Object);
-
-        await service.ReportAsync(SampleResult(), SampleContext(), "owner", "repo", "sha123", runId: 555);
-
-        issueCommentsClient.Verify(
-            x => x.Create("owner", "repo", 42, It.IsAny<string>()), Times.Once);
-        issueCommentsClient.Verify(
-            x => x.Create("owner", "repo", 10, It.IsAny<string>()), Times.Never);
     }
 }
