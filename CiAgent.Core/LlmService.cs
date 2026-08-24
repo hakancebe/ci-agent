@@ -113,13 +113,29 @@ public class LlmService
         return sb.ToString();
     }
 
-    private static string TrimLog(string log)
+    // internal (private değil): CiAgent.Tests'ten doğrudan test edilebilsin diye
+    // (bkz. AssemblyInfo.cs -> InternalsVisibleTo, ReportService'te de aynı desen var).
+    internal static string TrimLog(string log)
     {
         if (log.Length <= MaxLogChars) return log;
 
-        var head = log[..HeadChars];
-        var tail = log[^(MaxLogChars - HeadChars)..];
+        // Kesim noktalarını ham karakter indeksine göre değil, en yakın satır
+        // sonuna yuvarlıyoruz - aksi halde bir kelimenin/token'ın tam ortasından
+        // kesilebiliyor (gerçek ölçümde gördük: "InvokeMethod" -> "vokeMethod").
+        var headEnd = log.LastIndexOf('\n', Math.Min(HeadChars, log.Length - 1));
+        var head = headEnd >= 0 ? log[..headEnd] : log[..HeadChars];
 
-        return $"{head}\n\n... [{log.Length - MaxLogChars} karakter kırpıldı] ...\n\n{tail}";
+        var tailBudget = MaxLogChars - HeadChars;
+        var tailStartRaw = log.Length - tailBudget;
+        var newlineInTail = log.IndexOf('\n', tailStartRaw);
+        // Satır sonu bulunduysa hemen sonrasından (temiz satır başından) başla;
+        // bulunamadıysa (ör. tail bölümünde hiç satır sonu yoksa) eski davranışa düş.
+        var tailStart = newlineInTail >= 0 && newlineInTail < log.Length - 1
+            ? newlineInTail + 1
+            : tailStartRaw;
+        var tail = log[tailStart..];
+
+        var trimmedChars = log.Length - head.Length - tail.Length;
+        return $"{head}\n\n... [{trimmedChars} karakter kırpıldı] ...\n\n{tail}";
     }
 }
