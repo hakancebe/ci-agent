@@ -70,7 +70,7 @@ public class LlmService
 
         ChatCompletion completion = await _chat.CompleteChatAsync(messages, options);
         var json = completion.Content[0].Text;
-        
+
         //json to AnalysisResult type
         return JsonSerializer.Deserialize<AnalysisResult>(json);
     }
@@ -96,7 +96,12 @@ public class LlmService
                 sb.AppendLine($"- {Masker.Mask(a)}");
         }
 
-        if (!string.IsNullOrWhiteSpace(ctx.RawStepLog))
+        // Tüm hataların dosya:satır konumu zaten kesinse (AllFailuresLocated),
+        // ham log ekstra bilgi katmıyor - sadece ErrorMessage'ın tekrarı oluyor.
+        // Konum belirsizse (ör. build-cs1002'deki gibi parser'ın telafi
+        // edemediği durumlar), LLM'in ham veriden çıkarım yapabilmesi için tam
+        // hâliyle gönderiliyor.
+        if (!string.IsNullOrWhiteSpace(ctx.RawStepLog) && !ctx.AllFailuresLocated)
         {
             sb.AppendLine();
             sb.AppendLine("Ham log kesiti:");

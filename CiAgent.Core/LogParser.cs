@@ -151,6 +151,7 @@ public static class LogParser
         string? filePath = null;
         int? lineNumber = null;
         string? errorMessage = null;
+        var allFailuresLocated = false;
 
         foreach (var block in stepBlocks)
         {
@@ -159,6 +160,9 @@ public static class LogParser
             {
                 matchingBlock = TrimToTestSummary(block);
                 (filePath, lineNumber, errorMessage) = CombineTestFailures(failures);
+                // Tek tek her failure'ın kendi dosya:satır'ı bulunmuş mu? (üstteki
+                // filePath/lineNumber sadece ilk konumu bilinen failure'a ait.)
+                allFailuresLocated = failures.All(f => f.FilePath != null && f.LineNumber != null);
                 break;
             }
         }
@@ -174,6 +178,7 @@ public static class LogParser
                     filePath = fp;
                     lineNumber = ln;
                     errorMessage = msg;
+                    allFailuresLocated = fp != null && ln != null;
                     break;
                 }
             }
@@ -196,7 +201,8 @@ public static class LogParser
             FilteredAnnotations = filteredAnnotations,
             FilePath = filePath,
             LineNumber = lineNumber,
-            ErrorMessage = errorMessage
+            ErrorMessage = errorMessage,
+            AllFailuresLocated = allFailuresLocated
         };
     }
 
