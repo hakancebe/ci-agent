@@ -69,7 +69,10 @@ public static class LogParser
     private static readonly Regex StackTraceFileLineRegex = new(
         @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)");
 
-    private sealed record NamedTestFailure(string Name, string? FilePath, int? LineNumber, string Message);
+    // RawBlock: bu failure'a ait "Failed <ad> [...] ... Stack Trace: ..." metninin
+    // TAMAMI (regex eşleşmesinin kendisi) - BuildFilteredTestLog'un konumu bilinmeyen
+    // failure'lar için ham kanıtı seçici olarak geri koyabilmesi için saklanıyor.
+    private sealed record NamedTestFailure(string Name, string? FilePath, int? LineNumber, string Message, string RawBlock);
 
     private static List<NamedTestFailure> ExtractNamedTestFailures(string stepBlock)
     {
@@ -82,7 +85,8 @@ public static class LogParser
                 m.Groups["name"].Value,
                 stackMatch.Success ? stackMatch.Groups[1].Value : null,
                 stackMatch.Success ? int.Parse(stackMatch.Groups[2].Value) : null,
-                m.Groups["msg"].Value.Trim()));
+                m.Groups["msg"].Value.Trim(),
+                m.Value.TrimEnd()));
         }
 
         return failures;
@@ -158,11 +162,17 @@ public static class LogParser
             var failures = ExtractNamedTestFailures(block);
             if (failures.Count > 0)
             {
-                matchingBlock = TrimToTestSummary(block);
                 (filePath, lineNumber, errorMessage) = CombineTestFailures(failures);
                 // Tek tek her failure'ın kendi dosya:satır'ı bulunmuş mu? (üstteki
                 // filePath/lineNumber sadece ilk konumu bilinen failure'a ait.)
                 allFailuresLocated = failures.All(f => f.FilePath != null && f.LineNumber != null);
+
+                // Hepsi konumluysa RawStepLog zaten LlmService'e hiç gönderilmeyecek
+                // (bkz. AllFailuresLocated), içeriği önemsiz - eski davranış yeterli.
+                // En az biri konumsuzsa blok bazlı akıllı seçim uygulanıyor.
+                matchingBlock = allFailuresLocated
+                    ? TrimToTestSummary(block)
+                    : BuildFilteredTestLog(block, failures);
                 break;
             }
         }
@@ -235,12 +245,54 @@ public static class LogParser
         return (withLocation?.FilePath, withLocation?.LineNumber, sb.ToString().TrimEnd());
     }
 
+    // Kör char-kesme (TrimLog) yerine blok bazlı akıllı seçim: konumu (dosya:satır)
+    // zaten bilinen failure'ların stack trace'i atlanıyor - o bilgi Ayrıştırılmış
+    // hata mesajı'nda (ErrorMessage) zaten var. Sadece konumu bilinmeyen failure'ların
+    // TAM ham bloğu korunuyor, çünkü LLM'in kendi çıkarım yapabilmesi için asıl
+    // ihtiyaç duyduğu kanıt bu. Bu fonksiyon yalnızca en az bir failure'ın konumu
+    // bilinmediğinde çağrılıyor (aksi halde RawStepLog zaten LlmService'e hiç gitmiyor).
+    private static string BuildFilteredTestLog(string stepBlock, List<NamedTestFailure> failures)
+    {
+        var firstFailedMatch = Regex.Match(stepBlock, @"^\s*Failed\s+\S+\s*\[", RegexOptions.Multiline);
+        var header = firstFailedMatch.Success ? stepBlock[..firstFailedMatch.Index].TrimEnd() : "";
+
+        var sb = new StringBuilder();
+        if (header.Length > 0)
+        {
+            sb.AppendLine(header);
+            sb.AppendLine();
+        }
+
+        var skippedCount = 0;
+        foreach (var f in failures)
+        {
+            if (f.FilePath != null && f.LineNumber != null)
+            {
+                skippedCount++;
+                continue;
+            }
+
+            sb.AppendLine(f.RawBlock);
+            sb.AppendLine();
+        }
+
+        if (skippedCount > 0)
+            sb.AppendLine($"[{skippedCount} konumu bilinen test için ham stack trace atlandı — bkz. Ayrıştırılmış hata mesajı]");
+
+        var summaryMatch = Regex.Match(stepBlock, @"^.*Failed!\s*-\s*Failed:.*$", RegexOptions.Multiline);
+        sb.AppendLine(summaryMatch.Success
+            ? summaryMatch.Value.Trim()
+            : "[Özet satırı bulunamadı, muhtemelen step timeout/crash oldu]");
+
+        return sb.ToString().TrimEnd();
+    }
+
     private static string TrimToTestSummary(string stepBlock)
     {
         var summaryMatch = Regex.Match(stepBlock, @"^.*Failed!\s*-\s*Failed:.*$", RegexOptions.Multiline);
         return summaryMatch.Success
             ? stepBlock[..(summaryMatch.Index + summaryMatch.Length)]
-            : stepBlock;
+            : stepBlock + "\n\n[Özet satırı bulunamadı, muhtemelen step timeout/crash oldu]";
     }
 
     private static string TrimPostJobNoise(string stepBlock)

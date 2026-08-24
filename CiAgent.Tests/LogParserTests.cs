@@ -225,6 +225,117 @@ public class LogParserTests
     }
 
     [Fact]
+    public void BuildErrorContext_FiltersLocatedFailureStackTraces_WhenSomeFailuresLackLocation()
+    {
+        var job = new Octokit.WorkflowJob(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow,
+            startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: "build-test",
+            steps: new List<Octokit.WorkflowJobStep>
+            {
+            new(name: "Test",
+                status: Octokit.WorkflowJobStatus.Completed,
+                conclusion: Octokit.WorkflowJobConclusion.Failure,
+                number: 4,
+                startedAt: DateTimeOffset.UtcNow,
+                completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "",
+            labels: new List<string>());
+
+        // Add_ReturnsSum: konumu biliniyor (stack trace'de "...cs:line N" var).
+        // ThrowsFromUnknownLocation: konumu bilinmiyor (stack trace sadece framework
+        // dahili çağrıları, hiçbir "...cs:line N" satırı yok).
+        var log = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [28 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+    Expected: 350
+    Actual:   4
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+      Failed CiPilot.Core.Tests.CalculatorTests.ThrowsFromUnknownLocation [< 1 ms]
+      Error Message:
+       System.InvalidOperationException : Beklenmeyen hata
+      Stack Trace:
+         at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+         at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+    Failed!  - Failed:     2, Passed:     1, Skipped:     0, Total:     3, Duration: 122 ms - CiPilot.Core.Tests.dll (net8.0)
+    Post job cleanup.
+    [command]/usr/bin/git version
+    """;
+
+        var context = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        Assert.False(context!.AllFailuresLocated);
+        // Konumu bilinmeyen failure'ın tam ham bloğu (stack trace dahil) korunmalı.
+        Assert.Contains("ThrowsFromUnknownLocation", context.RawStepLog);
+        Assert.Contains("System.RuntimeMethodHandle.InvokeMethod", context.RawStepLog);
+        // Konumu zaten bilinen failure'ın stack trace satırı RawStepLog'a girmemeli
+        // (ErrorMessage'da zaten var, tekrar token harcamaya gerek yok).
+        Assert.DoesNotContain("CalculatorTests.cs:line 12", context.RawStepLog);
+        // Atlandığına dair not düşülmeli.
+        Assert.Contains("1 konumu bilinen test için ham stack trace atlandı", context.RawStepLog);
+        // Özet satırı korunmalı.
+        Assert.Contains("Failed:     2, Passed:     1", context.RawStepLog);
+        // ErrorMessage (ayrıştırılmış özet) her iki testi de eksiksiz içermeli.
+        Assert.Contains("Add_ReturnsSum", context.ErrorMessage);
+        Assert.Contains("ThrowsFromUnknownLocation", context.ErrorMessage);
+    }
+
+    [Fact]
+    public void BuildErrorContext_NotesMissingSummaryLine_WhenStepCrashesBeforePrintingIt()
+    {
+        var job = new Octokit.WorkflowJob(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow,
+            startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: "build-test",
+            steps: new List<Octokit.WorkflowJobStep>
+            {
+            new(name: "Test",
+                status: Octokit.WorkflowJobStatus.Completed,
+                conclusion: Octokit.WorkflowJobConclusion.Failure,
+                number: 4,
+                startedAt: DateTimeOffset.UtcNow,
+                completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "",
+            labels: new List<string>());
+
+        // "Failed!  - Failed:" özet satırı hiç basılmadan step crash/timeout oldu -
+        // konumu bilinmeyen tek failure var, BuildFilteredTestLog yoluna giriyor.
+        var log = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.ThrowsFromUnknownLocation [< 1 ms]
+      Error Message:
+       System.InvalidOperationException : Beklenmeyen hata
+      Stack Trace:
+         at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+    """;
+
+        var context = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        Assert.False(context!.AllFailuresLocated);
+        Assert.Contains("[Özet satırı bulunamadı, muhtemelen step timeout/crash oldu]", context.RawStepLog);
+    }
+
+    [Fact]
     public void BuildErrorContext_TrimsPostJobCleanupNoise_FromGenericErrorBlock()
     {
         var job = new Octokit.WorkflowJob(
