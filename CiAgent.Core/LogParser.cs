@@ -27,17 +27,90 @@ public static class LogParser
         return Regex.Replace(logLine, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s", "");
     }
 
+    // Blob satırı eşikleri - gerçek log satırları ölçülerek kalibre edildi:
+    //
+    //   satır tipi                          boşluk%
+    //   uzun stack trace satırı (213 kr)        4.7   <- en sıkışık gerçek satır
+    //   NU1101 restore hatası (266 kr)          6.8
+    //   uzun assert mesajı (194 kr)            16.0
+    //   base64 / hex / tekrarlı blob            0.0
+    //
+    // Boşluk oranı tek başına ayırt edici: blob'lar %0, gerçek log satırlarının
+    // en sıkışığı bile %4.7. Eşik %2 - ikisinin ortası değil, gerçek satırlardan
+    // uzak durup blob'ları rahat yakalayan taraf.
+    //
+    // Entropi ikinci bir ölçüt olarak denendi ve çıkarıldı: ölçülen 7 gürültü
+    // vakasının 6'sını zaten boşluk kuralı yakalıyordu (bkz. ROADMAP.md).
+    private const int MinBlobLineLength = 200;
+    private const double MaxBlobWhitespaceRatio = 0.02;
+    private const int RepeatCollapseThreshold = 3;
+
+    // Tek bir satırı gürültü açısından değerlendirir. Silmek yerine yer tutucuyla
+    // değiştiriyoruz: bazen kök nedenin kendisi "adım devasa bir blob bastı"
+    // olduğu için LLM'in orada bir şey olduğunu görmesi gerekiyor.
+    public static string SanitizeLine(string line)
+    {
+        if (line.Length < MinBlobLineLength)
+            return line;
+
+        var whitespace = 0;
+        foreach (var c in line)
+            if (char.IsWhiteSpace(c)) whitespace++;
+
+        if ((double)whitespace / line.Length < MaxBlobWhitespaceRatio)
+            return $"[uzun/binary satır kırpıldı, {line.Length} karakter]";
+
+        return line;
+    }
+
+    // Blok kurulmadan ÖNCE çalışan tek geçişli temizlik: timestamp strip ->
+    // satır bazlı blob kırpma -> ardışık tekrar birleştirme.
+    // Sıra önemli: timestamp'i önce atmazsak base64 satırının başındaki
+    // "2026-08-04T..." öneki "boşluk var" sayılıp blob kuralını bozuyor.
+    private static List<string> NormalizeLines(string rawLog)
+    {
+        var result = new List<string>();
+        string? previous = null;
+        var repeatCount = 0;
+
+        void Flush()
+        {
+            if (previous is null) return;
+
+            result.Add(previous);
+            if (repeatCount >= RepeatCollapseThreshold)
+                result.Add($"[satır {repeatCount} kez tekrarlandı]");
+        }
+
+        foreach (var rawLine in rawLog.Split('\n'))
+        {
+            var line = SanitizeLine(StripTimestamp(rawLine));
+
+            if (line == previous)
+            {
+                repeatCount++;
+                continue;
+            }
+
+            Flush();
+            previous = line;
+            repeatCount = 1;
+        }
+
+        Flush();
+        return result;
+    }
+
     //API üzerinden gelen metadata
     public static List<string> ExtractStepBlocks(string rawLog)
     {
-        var lines = rawLog.Split('\n');
+        // NormalizeLines timestamp'i zaten attı, burada tekrar StripTimestamp yok.
+        var lines = NormalizeLines(rawLog);
         var blocks = new List<string>();
         var currentBlock = new List<string>();
 
-        foreach (var rawLine in lines)
+        foreach (var line in lines)
         {
-            var line = StripTimestamp(rawLine);
-
             if (line.StartsWith("##[group]Run "))
             {
                 if (currentBlock.Count > 0)
@@ -64,10 +137,13 @@ public static class LogParser
     // döndüren ExtractTestFailure bunun üzerine kurulu (geriye dönük uyumluluk için).
     private static readonly Regex TestFailureRegex = new(
         @"Failed\s+(?<name>\S+)\s*\[.*?\]\s*Error Message:\s*(?<msg>.+?)Stack Trace:\s*(?<stack>.*?)(?=\r?\n\s*Failed\s+\S+\s*\[|\r?\n\s*Failed!\s*-|\z)",
-        RegexOptions.Singleline);
+        RegexOptions.Singleline,
+        matchTimeout: TimeSpan.FromSeconds(2));
 
     private static readonly Regex StackTraceFileLineRegex = new(
-        @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)");
+        @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)",
+        RegexOptions.None,
+        matchTimeout: TimeSpan.FromSeconds(2));
 
     // RawBlock: bu failure'a ait "Failed <ad> [...] ... Stack Trace: ..." metninin
     // TAMAMI (regex eşleşmesinin kendisi) - BuildFilteredTestLog'un konumu bilinmeyen
@@ -245,12 +321,15 @@ public static class LogParser
         return (withLocation?.FilePath, withLocation?.LineNumber, sb.ToString().TrimEnd());
     }
 
-    // Kör char-kesme (TrimLog) yerine blok bazlı akıllı seçim: konumu (dosya:satır)
+    // Kör char-kesme yerine blok bazlı akıllı seçim: konumu (dosya:satır)
     // zaten bilinen failure'ların stack trace'i atlanıyor - o bilgi Ayrıştırılmış
     // hata mesajı'nda (ErrorMessage) zaten var. Sadece konumu bilinmeyen failure'ların
     // TAM ham bloğu korunuyor, çünkü LLM'in kendi çıkarım yapabilmesi için asıl
     // ihtiyaç duyduğu kanıt bu. Bu fonksiyon yalnızca en az bir failure'ın konumu
     // bilinmediğinde çağrılıyor (aksi halde RawStepLog zaten LlmService'e hiç gitmiyor).
+    // Not: LlmService artık ham logu kırpmıyor - çok büyükse analizi tamamen
+    // atlıyor (MaxPromptChars). Yani buradaki seçicilik doğrudan "analiz yapılıp
+    // yapılmayacağını" etkiliyor, sadece token tasarrufu değil.
     private static string BuildFilteredTestLog(string stepBlock, List<NamedTestFailure> failures)
     {
         var firstFailedMatch = Regex.Match(stepBlock, @"^\s*Failed\s+\S+\s*\[", RegexOptions.Multiline);

@@ -8,10 +8,26 @@ namespace CiAgent.Core;
 
 public class LlmService
 {
-    private readonly ChatClient _chat;
+    // Test constructor'ında kurulmaz (bkz. aşağıdaki internal ctor); gerçek
+    // kullanımda her zaman dolu.
+    private readonly ChatClient? _chat;
 
-    private const int MaxLogChars = 8000;
-    private const int HeadChars = 1500;
+    // Prompt üst sınırı. Ham log artık kırpılmıyor - ya tamamı gider ya da hiç
+    // analiz yapılmaz. Ölçümle belirlendi; gerçek senaryolarda üretilen nihai
+    // prompt boyutları:
+    //
+    //   senaryo                                    prompt
+    //   build (CS1002, konum tam)                     129 kr
+    //   test (8 fail, konum tam)                    1.015 kr
+    //   restore (NU1101)                            3.572 kr
+    //   deploy (generic + 60 annotation)            7.122 kr
+    //   test (konum belirsiz, 48 KB ham log)       48.131 kr  <- en büyük
+    //
+    // En büyük gerçek senaryo 48.131'de, yani limitin %96'sında oturuyor -
+    // pay bilinçli olarak dar. Ölçülen kırılma noktası: sanitize sonrası
+    // RawStepLog ~49.870 kr (~59 KB ham log / ~325 farklı stack trace satırı).
+    // Bunun altındaki her şey tam hâliyle LLM'e gider, üstündeki hiç gitmez.
+    private const int MaxPromptChars = 50_000;
 
     private const string SystemPrompt = """
         Sen bir CI/CD hata analiz asistanısın. Sana bir GitHub Actions job'ının
@@ -50,8 +66,39 @@ public class LlmService
         _chat = client.GetChatClient(deployment);
     }
 
+    // Yalnızca testler için: gerçek ChatClient kurulmaz, dolayısıyla bu
+    // constructor'la üretilen örnek ağa hiç çıkamaz. Testler CompleteAsync'i
+    // override ederek çağrının gidip gitmediğini sayar.
+    internal LlmService()
+    {
+        _chat = null;
+    }
+
+    // Transport seam'i: gerçek Azure OpenAI çağrısını tek bir yerde topluyor ki
+    // testler bunu override edip OpenAI SDK'sının model tipleriyle uğraşmadan
+    // sahte JSON dönebilsin.
+    internal virtual async Task<string> CompleteAsync(
+        List<ChatMessage> messages, ChatCompletionOptions options)
+    {
+        if (_chat is null)
+            throw new InvalidOperationException(
+                "LlmService test constructor'ıyla kuruldu; CompleteAsync override edilmeliydi.");
+
+        ChatCompletion completion = await _chat.CompleteChatAsync(messages, options);
+        return completion.Content[0].Text;
+    }
+
     public async Task<AnalysisResult?> AnalyzeAsync(ErrorContext context)
     {
+        // Prompt BİR KEZ üretilip ölçülüyor; eşik aşılırsa Azure OpenAI'a hiç
+        // istek atılmıyor. Dönen sonuç null değil "atlandı" durumu - null olsaydı
+        // Program.cs erken return edip raporu hiç atmazdı, yani durum sessizce
+        // kaybolurdu.
+        var prompt = BuildPrompt(context);
+
+        if (prompt.Length > MaxPromptChars)
+            return AnalysisResult.ForSkipped(prompt.Length, MaxPromptChars);
+
         var options = new ChatCompletionOptions
         {
             //Kendince bir şey eklmemesi için 0.2f belirliyoruz
@@ -65,17 +112,18 @@ public class LlmService
         List<ChatMessage> messages =
         [
             new SystemChatMessage(SystemPrompt),
-            new UserChatMessage(BuildPrompt(context))
+            new UserChatMessage(prompt)
         ];
 
-        ChatCompletion completion = await _chat.CompleteChatAsync(messages, options);
-        var json = completion.Content[0].Text;
+        var json = await CompleteAsync(messages, options);
 
         //json to AnalysisResult type
         return JsonSerializer.Deserialize<AnalysisResult>(json);
     }
 
-    private static string BuildPrompt(ErrorContext ctx)
+    // internal (private değil): AnalyzeAsync'in ölçtüğü uzunluk testlerden
+    // doğrudan doğrulanabilsin diye (bkz. AssemblyInfo.cs -> InternalsVisibleTo).
+    internal static string BuildPrompt(ErrorContext ctx)
     {
         var sb = new StringBuilder();
 
@@ -99,43 +147,19 @@ public class LlmService
         // Tüm hataların dosya:satır konumu zaten kesinse (AllFailuresLocated),
         // ham log ekstra bilgi katmıyor - sadece ErrorMessage'ın tekrarı oluyor.
         // Konum belirsizse (ör. build-cs1002'deki gibi parser'ın telafi
-        // edemediği durumlar), LLM'in ham veriden çıkarım yapabilmesi için tam
-        // hâliyle gönderiliyor.
+        // edemediği durumlar), LLM'in ham veriden çıkarım yapabilmesi için TAM
+        // hâliyle gönderiliyor - kırpma yok. Fazla büyükse AnalyzeAsync zaten
+        // analizi tamamen atlıyor (MaxPromptChars).
         if (!string.IsNullOrWhiteSpace(ctx.RawStepLog) && !ctx.AllFailuresLocated)
         {
             sb.AppendLine();
             sb.AppendLine("Ham log kesiti:");
             sb.AppendLine("```");
-            sb.AppendLine(TrimLog(Masker.Mask(ctx.RawStepLog)));
+            sb.AppendLine(Masker.Mask(ctx.RawStepLog));
             sb.AppendLine("```");
         }
 
         return sb.ToString();
     }
 
-    // internal (private değil): CiAgent.Tests'ten doğrudan test edilebilsin diye
-    // (bkz. AssemblyInfo.cs -> InternalsVisibleTo, ReportService'te de aynı desen var).
-    internal static string TrimLog(string log)
-    {
-        if (log.Length <= MaxLogChars) return log;
-
-        // Kesim noktalarını ham karakter indeksine göre değil, en yakın satır
-        // sonuna yuvarlıyoruz - aksi halde bir kelimenin/token'ın tam ortasından
-        // kesilebiliyor (gerçek ölçümde gördük: "InvokeMethod" -> "vokeMethod").
-        var headEnd = log.LastIndexOf('\n', Math.Min(HeadChars, log.Length - 1));
-        var head = headEnd >= 0 ? log[..headEnd] : log[..HeadChars];
-
-        var tailBudget = MaxLogChars - HeadChars;
-        var tailStartRaw = log.Length - tailBudget;
-        var newlineInTail = log.IndexOf('\n', tailStartRaw);
-        // Satır sonu bulunduysa hemen sonrasından (temiz satır başından) başla;
-        // bulunamadıysa (ör. tail bölümünde hiç satır sonu yoksa) eski davranışa düş.
-        var tailStart = newlineInTail >= 0 && newlineInTail < log.Length - 1
-            ? newlineInTail + 1
-            : tailStartRaw;
-        var tail = log[tailStart..];
-
-        var trimmedChars = log.Length - head.Length - tail.Length;
-        return $"{head}\n\n... [{trimmedChars} karakter kırpıldı] ...\n\n{tail}";
-    }
 }

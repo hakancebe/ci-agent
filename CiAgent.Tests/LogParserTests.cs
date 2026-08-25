@@ -40,6 +40,48 @@ public class LogParserTests
     }
 
     [Fact]
+    public void ExtractStepBlocks_DropsBlobLines_ButKeepsRealErrorLine()
+    {
+        // 300 karakterlik boşluksuz "rastgele" içerik - base64 gömülü bir adım
+        // logunun gerçekte nasıl göründüğünün küçük ölçekli hâli.
+        var blob = string.Concat(Enumerable.Range(0, 300)
+            .Select(i => "AbC7dEf9GhIjKlMnOpQrStUvWxYz0123456789+/"[i * 7 % 40]));
+        Assert.Equal(300, blob.Length);
+
+        const string errorLine = "##[error]Process completed with exit code 1.";
+
+        var log = $"""
+        2026-08-04T13:55:48.1732271Z ##[group]Run dotnet test --no-build -c Release
+        2026-08-04T13:55:48.1775268Z ##[endgroup]
+        2026-08-04T13:55:49.0000001Z data:image/png;base64,{blob}
+        2026-08-04T13:55:49.0000002Z {blob}
+        2026-08-04T13:55:50.8272063Z {errorLine}
+        """;
+
+        var blocks = LogParser.ExtractStepBlocks(log);
+
+        var block = Assert.Single(blocks);
+
+        // 1) Gürültü gerçekten gitti: ham blob içerikten çıktı, yerine yer tutucu geldi.
+        Assert.DoesNotContain(blob, block);
+        Assert.Contains("[uzun/binary satır kırpıldı, ", block);
+        Assert.True(block.Length < log.Length,
+            $"blok kısalmadı: {block.Length} >= {log.Length}");
+
+        // 2) Sinyal duruyor: asıl hata satırı hâlâ içinde.
+        Assert.Contains(errorLine, block);
+
+        // 3) Yanlış pozitif guard'ı: 200 karakteri aşan ama GERÇEK olan satırlar
+        // kırpılmamalı. Aşağıdaki stack trace satırı (213 karakter, %4.7 boşluk)
+        // ilk kalibrasyonda sessizce yeniyordu - eşikler bu yüzden sıkılaştırıldı.
+        const string longStackTrace =
+            "   at CiPilot.Core.Services.OrderProcessor.ValidateAndSubmitAsync(OrderRequest request, "
+            + "CancellationToken cancellationToken) in /home/runner/work/ci-agent-pilot/src/CiPilot.Core/Services/OrderProcessor.cs:line 412";
+        Assert.True(longStackTrace.Length > 200, "guard satırı 200 karakteri aşmalı");
+        Assert.Equal(longStackTrace, LogParser.SanitizeLine(longStackTrace));
+    }
+
+    [Fact]
     public void ExtractStepBlocks_KeepsContentAfterEndgroup()
     {
         var log = """

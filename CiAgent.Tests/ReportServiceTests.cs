@@ -335,4 +335,48 @@ public class ReportServiceTests
             x => x.Create("owner", "repo", "sha123", It.Is<NewCommitComment>(c => c.Body.StartsWith(ReportService.BuildMarker(777)))),
             Times.Once);
     }
+
+    [Fact]
+    public void BuildCommentBody_RendersSkippedNotice_InsteadOfAnalysis()
+    {
+        var result = AnalysisResult.ForSkipped(promptChars: 62_063, maxChars: 50_000);
+        var context = new ErrorContext
+        {
+            JobName = "build-test",
+            FailedStepName = "Test",
+            FilePath = "src/Calculator.cs",
+            LineNumber = 42
+        };
+
+        var body = ReportService.BuildCommentBody(result, context, runId: 999);
+
+        // Marker/idempotency korunmalı - dedup mantığı buna bakıyor.
+        Assert.StartsWith(ReportService.BuildMarker(999), body.TrimStart());
+
+        // Atlandığı açıkça yazmalı, sayılar gövdede olmalı.
+        Assert.Contains("Otomatik Analiz Atlandı", body);
+        Assert.Contains("62.063", body);
+        Assert.Contains("50.000", body);
+        Assert.Contains("Elle inceleme gerekiyor", body);
+
+        // Analiz başlıkları HİÇ görünmemeli - uydurma kök neden izlenimi vermesin.
+        Assert.DoesNotContain("Kök Neden", body);
+        Assert.DoesNotContain("Önerilen Çözüm", body);
+        Assert.DoesNotContain("Güven düzeyi", body);
+    }
+
+    [Fact]
+    public void BuildJobSummaryBody_RendersSkippedNotice_InsteadOfAnalysis()
+    {
+        var result = AnalysisResult.ForSkipped(promptChars: 62_063, maxChars: 50_000);
+        var context = new ErrorContext { JobName = "build-test", FailedStepName = "Test" };
+
+        var body = ReportService.BuildJobSummaryBody(result, context, postedToGitHub: true);
+
+        Assert.Contains("Otomatik Analiz Atlandı", body);
+        Assert.Contains("62.063", body);
+        Assert.Contains("50.000", body);
+        Assert.Contains("Elle inceleme gerekiyor", body);
+        Assert.DoesNotContain("Kök Neden", body);
+    }
 }

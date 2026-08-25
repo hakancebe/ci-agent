@@ -176,6 +176,25 @@ public class ReportService
         var sb = new StringBuilder();
 
         sb.AppendLine(BuildMarker(runId));
+
+        if (result.Skipped)
+        {
+            sb.AppendLine("## ⏭️ CiAgent — Otomatik Analiz Atlandı");
+            sb.AppendLine();
+            sb.AppendLine($"**Job:** `{context.JobName}`  ");
+            sb.AppendLine($"**Başarısız adım:** `{context.FailedStepName}`  ");
+            sb.AppendLine();
+            sb.AppendLine($"> {result.SkipReason}");
+            sb.AppendLine();
+            sb.AppendLine("**Elle inceleme gerekiyor** — bu run için LLM analizi çalıştırılmadı, ");
+            sb.AppendLine("aşağıdaki yorumlar otomatik bir kök neden tespiti içermiyor.");
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine($"<sub>Run ID: {runId} · Bu yorum CiAgent tarafından otomatik oluşturuldu; aynı run tekrar analiz edilirse bu yorum güncellenir.</sub>");
+
+            return sb.ToString();
+        }
+
         sb.AppendLine("## 🤖 CiAgent — Otomatik Hata Analizi");
         sb.AppendLine();
         sb.AppendLine($"**Job:** `{context.JobName}`  ");
@@ -245,6 +264,24 @@ public class ReportService
     internal static string BuildJobSummaryBody(AnalysisResult result, ErrorContext context, bool postedToGitHub)
     {
         var sb = new StringBuilder();
+
+        if (result.Skipped)
+        {
+            sb.AppendLine("## ⏭️ CiAgent — Otomatik Analiz Atlandı");
+            sb.AppendLine();
+            sb.AppendLine($"- **Job:** `{context.JobName}`");
+            sb.AppendLine($"- **Başarısız adım:** `{context.FailedStepName}`");
+            sb.AppendLine($"- **Sebep:** {result.SkipReason}");
+
+            if (!postedToGitHub)
+                sb.AppendLine("- ⚠️ PR/commit yorumu atılamadı (izin veya erişim kısıtlı olabilir) — tek çıktı bu özet.");
+
+            sb.AppendLine();
+            sb.AppendLine("**Elle inceleme gerekiyor** — bu run için LLM analizi çalıştırılmadı.");
+            sb.AppendLine();
+
+            return sb.ToString();
+        }
 
         sb.AppendLine("## 🤖 CiAgent Analiz Özeti");
         sb.AppendLine();

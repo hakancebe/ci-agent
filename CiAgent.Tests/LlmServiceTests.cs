@@ -1,71 +1,130 @@
+using System.Text;
 using CiAgent.Core;
+using OpenAI.Chat;
 
 namespace CiAgent.Tests;
 
 public class LlmServiceTests
 {
-    [Fact]
-    public void TrimLog_ReturnsLogUnchanged_WhenUnderLimit()
+    /// <summary>
+    /// Gerçek ChatClient'ı hiç kurmayan test double'ı: LlmService'in internal test
+    /// constructor'ını kullanır ve transport seam'ini (CompleteAsync) override eder.
+    /// Böylece Azure OpenAI'a HİÇBİR istek çıkmaz ve çağrının gerçekten yapılıp
+    /// yapılmadığı sayılabilir.
+    /// </summary>
+    private sealed class FakeLlmService : LlmService
     {
-        var log = "kısa bir log, hiç kırpma gerekmiyor";
+        private readonly string _json;
+        public int CallCount { get; private set; }
 
-        var result = LlmService.TrimLog(log);
+        public FakeLlmService(string json) => _json = json;
 
-        Assert.Equal(log, result);
-    }
-
-    [Fact]
-    public void TrimLog_NeverCutsALineInTheMiddle()
-    {
-        // Sabit uzunlukta 500 satırlık bir log kuruyoruz - hiçbir satır sınırı
-        // MaxLogChars(8000)/HeadChars(1500) ile tesadüfen hizalanmıyor, yani eski
-        // (kör char-index) implementasyon neredeyse kesin bir satırı ortadan kesecekti.
-        var lines = Enumerable.Range(1, 500)
-            .Select(i => $"satir-{i:D4}-icerik-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
-            .ToArray();
-        var log = string.Join("\n", lines);
-        Assert.True(log.Length > 8000); // varsayımı doğrula
-
-        var result = LlmService.TrimLog(log);
-
-        foreach (var line in result.Split('\n'))
+        internal override Task<string> CompleteAsync(
+            List<ChatMessage> messages, ChatCompletionOptions options)
         {
-            if (line.Length == 0) continue;
-            if (line.StartsWith("...")) continue; // kırpma marker satırı
-
-            // Çıktıdaki her satır ya bilinen tam satırlardan biri olmalı ya da
-            // marker satırı - asla bir satırın yarısı olmamalı (ör. "vokeMethod"
-            // gibi kelime ortasından kesilmiş bir parça).
-            Assert.Contains(line, lines);
+            CallCount++;
+            return Task.FromResult(_json);
         }
     }
 
-    [Fact]
-    public void TrimLog_KeepsHeadAndTailFromOppositeEndsOfLog()
+    private const string ValidJson = """
+        {
+          "summary": "Test başarısız oldu",
+          "rootCause": "Beklenen değer farklı",
+          "suggestedFix": "Calculator.Add metodunu düzelt",
+          "confidence": "high",
+          "affectedFile": "src/Calculator.cs",
+          "affectedLine": 42
+        }
+        """;
+
+    private static ErrorContext Context(string? rawStepLog = null, bool allLocated = false) =>
+        new()
+        {
+            JobName = "build-test",
+            FailedStepName = "Test",
+            ErrorMessage = "Assert.Equal() Failure: Expected 5, Actual 4",
+            RawStepLog = rawStepLog,
+            AllFailuresLocated = allLocated
+        };
+
+    // Her satırı farklı, boşluklu (sanitizer'ın eleyemeyeceği "gerçek" içerik) ham log.
+    private static string RawLog(int lineCount)
     {
-        var lines = Enumerable.Range(1, 500)
-            .Select(i => $"satir-{i:D4}-icerik-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
-            .ToArray();
-        var log = string.Join("\n", lines);
-
-        var result = LlmService.TrimLog(log);
-
-        Assert.Contains(lines[0], result);      // ilk satır (head) korunmalı
-        Assert.Contains(lines[^1], result);     // son satır (tail) korunmalı
-        Assert.Contains("karakter kırpıldı", result);
-        Assert.DoesNotContain(lines[250], result); // ortadaki bir satır kırpılmış olmalı
+        var sb = new StringBuilder();
+        for (var i = 0; i < lineCount; i++)
+            sb.AppendLine(
+                $"   at CiPilot.Core.Services.Module{i}.Handler{i}.ValidateAsync(Request r{i}, "
+                + $"CancellationToken ct) in /home/runner/work/src/Module{i}/Handler{i}.cs:line {400 + i}");
+        return sb.ToString();
     }
 
     [Fact]
-    public void TrimLog_FallsBackToRawIndex_WhenNoNewlinesPresent()
+    public async Task AnalyzeAsync_CallsLlmAndReturnsResult_WhenPromptUnderLimit()
     {
-        // Hiç satır sonu içermeyen, tek parça dev bir "satır" - satır sınırına
-        // yuvarlanacak bir nokta yok, eski (ham index) davranışa düşmeli, çökmemeli.
-        var log = new string('X', 20000);
+        var llm = new FakeLlmService(ValidJson);
+        var context = Context(RawLog(50));
 
-        var result = LlmService.TrimLog(log);
+        // Varsayımı doğrula: bu prompt gerçekten limitin altında olmalı.
+        Assert.True(LlmService.BuildPrompt(context).Length < 50_000);
 
-        Assert.Contains("karakter kırpıldı", result);
-        Assert.True(result.Length < log.Length);
+        var result = await llm.AnalyzeAsync(context);
+
+        Assert.Equal(1, llm.CallCount);
+        Assert.NotNull(result);
+        Assert.False(result!.Skipped);
+        Assert.Null(result.SkipReason);
+        Assert.Equal("Test başarısız oldu", result.Summary);
+        Assert.Equal("high", result.Confidence);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_SkipsWithoutCallingLlm_WhenPromptOverLimit()
+    {
+        var llm = new FakeLlmService(ValidJson);
+        // ~400 farklı stack trace satırı -> prompt 50.000'i aşıyor (ölçülen kırılma
+        // noktası ~325 satır civarı).
+        var context = Context(RawLog(400));
+
+        var promptLength = LlmService.BuildPrompt(context).Length;
+        Assert.True(promptLength > 50_000, $"kurgu bozuk: prompt {promptLength} kr, limitin altında");
+
+        var result = await llm.AnalyzeAsync(context);
+
+        // Asıl iddia: Azure OpenAI'a HİÇ gidilmedi.
+        Assert.Equal(0, llm.CallCount);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Skipped);
+        Assert.Equal("low", result.Confidence);
+        Assert.NotNull(result.SkipReason);
+        Assert.Contains(promptLength.ToString("N0"), result.SkipReason);
+        Assert.Contains(50_000.ToString("N0"), result.SkipReason);
+        Assert.Contains("otomatik analiz limiti aştığı için yapılmadı", result.SkipReason);
+    }
+
+    [Fact]
+    public void BuildPrompt_IncludesRawLogUntrimmed_WhenLocationUnknown()
+    {
+        // TrimLog kaldırıldı: ham log artık kesilmeden prompt'a giriyor.
+        var raw = RawLog(200);
+        var prompt = LlmService.BuildPrompt(Context(raw, allLocated: false));
+
+        Assert.Contains("Ham log kesiti:", prompt);
+        Assert.DoesNotContain("karakter kırpıldı] ...", prompt);
+        // İlk ve SON satır birden içeride olmalı - head+tail kesme olsaydı
+        // ortadaki satırlar kaybolurdu.
+        Assert.Contains("Module0.Handler0", prompt);
+        Assert.Contains("Module199.Handler199", prompt);
+        Assert.Contains("Module100.Handler100", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_OmitsRawLog_WhenAllFailuresLocated()
+    {
+        var prompt = LlmService.BuildPrompt(Context(RawLog(200), allLocated: true));
+
+        Assert.DoesNotContain("Ham log kesiti:", prompt);
+        Assert.Contains("Assert.Equal() Failure", prompt);
     }
 }

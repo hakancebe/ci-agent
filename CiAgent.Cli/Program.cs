@@ -100,12 +100,17 @@ if (result is null)
 }
 
 Console.WriteLine("--- AnalysisResult ---");
-Console.WriteLine($"Summary:      {result.Summary}");
-Console.WriteLine($"RootCause:    {result.RootCause}");
-Console.WriteLine($"SuggestedFix: {result.SuggestedFix}");
-Console.WriteLine($"Confidence:   {result.Confidence}");
-Console.WriteLine($"AffectedFile: {result.AffectedFile}");
-Console.WriteLine($"AffectedLine: {result.AffectedLine}");
+if (result.Skipped)
+    Console.WriteLine($"ATLANDI: {result.SkipReason}");
+else
+{
+    Console.WriteLine($"Summary:      {result.Summary}");
+    Console.WriteLine($"RootCause:    {result.RootCause}");
+    Console.WriteLine($"SuggestedFix: {result.SuggestedFix}");
+    Console.WriteLine($"Confidence:   {result.Confidence}");
+    Console.WriteLine($"AffectedFile: {result.AffectedFile}");
+    Console.WriteLine($"AffectedLine: {result.AffectedLine}");
+}
 
 // --- Adım 4: Raporlama (PR yorumu -> commit yorumu -> Job Summary) ---
 Console.WriteLine();
