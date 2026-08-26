@@ -1,12 +1,19 @@
 using CiAgent.Core;
+using Microsoft.Extensions.Configuration;
 
-// --- Secret'lar: GitHub ve Azure OpenAI birbirinden bağımsız env var'lar ---
-// GITHUB_TOKEN yalnızca Octokit/GitHub API çağrıları için kullanılır.
-// AZURE_OPENAI_* ise LLM analizi için ayrı bir secret setidir, birbirine karıştırılmaz.
-var githubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-var azureEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
-var azureKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_KEY");
-var azureDeployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT");
+// Yapılandırma zincirini oluştur: 
+// 1. Önce Environment Variable'ları bakar
+// 2. Ardından User Secrets bakar (yerelde varsa üzerine yazar)
+var config = new ConfigurationBuilder()
+    .AddEnvironmentVariables()
+    .AddUserSecrets<Program>()
+    .Build();
+
+// --- Secret'lar: Öncelik sırasıyla okunur ---
+var githubToken = config["GITHUB_TOKEN"] ?? config["GitHub:Token"];
+var azureEndpoint = config["AZURE_OPENAI_ENDPOINT"] ?? config["AzureOpenAI:Endpoint"];
+var azureKey = config["AZURE_OPENAI_KEY"] ?? config["AzureOpenAI:ApiKey"];
+var azureDeployment = config["AZURE_OPENAI_DEPLOYMENT"] ?? config["AzureOpenAI:DeploymentName"];
 
 var missing = new List<string>();
 if (string.IsNullOrWhiteSpace(githubToken)) missing.Add("GITHUB_TOKEN");
@@ -87,6 +94,46 @@ Console.WriteLine($"Başarısız adım: {errorContext.FailedStepName}");
 Console.WriteLine($"Dosya: {errorContext.FilePath}, Satır: {errorContext.LineNumber}");
 Console.WriteLine($"Annotation sayısı: {errorContext.FilteredAnnotations.Count}");
 Console.WriteLine();
+
+// --- "Koda bakma": FilePath+LineNumber ikisi de doluysa (compile/test hataları)
+// ilgili dosyanın ±30 satırlık kesitini çekip prompt'a ekliyoruz. Path+line yoksa
+// (restore/deploy hataları) bu adım tamamen atlanıyor.
+if (errorContext.FilePath is not null && errorContext.LineNumber is int line)
+{
+    Console.WriteLine("İlgili kod dosyası çekiliyor...");
+    try
+    {
+        var fileContent = await github.GetFileContentAsync(
+            owner, repo, errorContext.FilePath, failedJob.HeadSha);
+
+        if (fileContent is not null)
+        {
+            errorContext.CodeSnippet = CodeSnippetExtractor.ExtractSnippet(fileContent, line);
+        }
+        else
+        {
+            Console.WriteLine($"Uyarı: '{errorContext.FilePath}' dosyası bulunamadı, kod kesiti olmadan devam ediliyor.");
+        }
+    }
+    catch (Exception ex)
+    {
+        // Kod çekme başarısız olsa bile agent LLM analizine kod olmadan devam etmeli
+        Console.Error.WriteLine($"Kod çekilirken hata: {ex.Message}, kod kesiti olmadan devam ediliyor.");
+    }
+
+    if (errorContext.CodeSnippet is null)
+    {
+        Console.WriteLine("CodeSnippet: boş kaldı.");
+    }
+    else
+    {
+        Console.WriteLine($"CodeSnippet: dolduruldu ({errorContext.CodeSnippet.Split('\n').Length} satır):");
+        Console.WriteLine("--- CodeSnippet başlangıcı ---");
+        Console.WriteLine(errorContext.CodeSnippet);
+        Console.WriteLine("--- CodeSnippet sonu ---");
+    }
+    Console.WriteLine();
+}
 
 // --- Adım 3: LLM analizi ---
 Console.WriteLine("Azure OpenAI'a istek atılıyor...");

@@ -10,6 +10,12 @@ public class ErrorContext
     public int? LineNumber { get; set; }
     public string? ErrorMessage { get; set; }
 
+    // FilePath+LineNumber ikisi de doluysa (compile/test hataları) GitHub Contents
+    // API'den çekilen dosyanın ±30 satırlık kesiti. Path+line yoksa (restore/deploy
+    // hataları) bu adım hiç tetiklenmez, CodeSnippet null kalır. Program.cs LLM
+    // çağrısından önce doldurur; LlmService.BuildPrompt bunu prompt'a ekler.
+    public string? CodeSnippet { get; set; }
+
     // Tek hatada FilePath+LineNumber doluysa, ya da çoklu test hatasında HER
     // failure'ın kendi konumu (dosya:satır) bulunmuşsa true. LlmService bunu
     // RawStepLog'u prompt'a ekleyip eklememeye karar vermek için kullanıyor:

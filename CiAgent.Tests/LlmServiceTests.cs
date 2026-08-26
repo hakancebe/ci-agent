@@ -48,6 +48,18 @@ public class LlmServiceTests
             AllFailuresLocated = allLocated
         };
 
+    private static ErrorContext ContextWithCodeSnippet(string codeSnippet) =>
+        new()
+        {
+            JobName = "build-test",
+            FailedStepName = "Test",
+            ErrorMessage = "Assert.Equal() Failure: Expected 5, Actual 4",
+            FilePath = "src/Calculator.cs",
+            LineNumber = 42,
+            AllFailuresLocated = true,
+            CodeSnippet = codeSnippet
+        };
+
     // Her satırı farklı, boşluklu (sanitizer'ın eleyemeyeceği "gerçek" içerik) ham log.
     private static string RawLog(int lineCount)
     {
@@ -126,5 +138,36 @@ public class LlmServiceTests
 
         Assert.DoesNotContain("Ham log kesiti:", prompt);
         Assert.Contains("Assert.Equal() Failure", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_IncludesCodeSnippet_WhenPresent()
+    {
+        var snippet = "40: public int Add(int a, int b)\n>> 41: {\n42:     return a - b;\n43: }";
+        var prompt = LlmService.BuildPrompt(ContextWithCodeSnippet(snippet));
+
+        Assert.Contains("İlgili kod (satır 42 civarı, >> işaretli satır hatanın olduğu satır):", prompt);
+        Assert.Contains(snippet, prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_OmitsCodeSnippetSection_WhenCodeSnippetIsNull()
+    {
+        var prompt = LlmService.BuildPrompt(Context());
+
+        Assert.DoesNotContain("İlgili kod (satır", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_DoesNotMaskCodeSnippet_UnlikeRawLogAndErrorMessage()
+    {
+        // Kaynak kodda "password" gibi bir kelime geçen bir değişken adı Masker'dan
+        // geçseydi "password=***" hâline gelip kodu bozardı - CodeSnippet bilinçli
+        // olarak Masker.Mask'tan geçirilmiyor.
+        var snippet = ">> 10:     var password = ComputeHash(rawPassword);";
+        var prompt = LlmService.BuildPrompt(ContextWithCodeSnippet(snippet));
+
+        Assert.Contains(snippet, prompt);
+        Assert.DoesNotContain("password=***", prompt);
     }
 }

@@ -6,7 +6,7 @@ namespace CiAgent.Core;
 
 public class GitHubService
 {
-  private readonly GitHubClient _client;
+  private readonly IGitHubClient _client;
   private readonly HttpClient _http;
   public GitHubService(String token)
   {
@@ -21,8 +21,18 @@ public class GitHubService
 
   }
 
+  // Testler için: gerçek ağa hiç çıkmayan bir IGitHubClient (Moq) enjekte edilebilir
+  // (bkz. GitHubServiceTests, ReportServiceTests'teki mock kurulum pattern'i örnek alındı).
+  // _http bu ctor'la kurulmaz - sadece Content API'ye dokunan testlerde kullanılır,
+  // DownloadJobLogAsync bu şekilde üretilen bir örnekle çağrılmamalı.
+  internal GitHubService(IGitHubClient client)
+  {
+    _client = client;
+    _http = null!;
+  }
+
   // ReportService gibi diğer servislerin aynı authenticated client'ı paylaşması için.
-  public GitHubClient Client => _client;
+  public IGitHubClient Client => _client;
 
   public Task<WorkflowRun> GetRunAsync(string owner, string repo, long runId)
    => _client.Actions.Workflows.Runs.Get(owner, repo, runId);
@@ -73,5 +83,40 @@ public class GitHubService
         $"UYARI: {owner}/{repo} job {jobId} logu {MaxLogChars:N0} karakter sınırında kırpıldı, analiz eksik loga dayanıyor.");
 
     return sb.ToString();
+  }
+
+  // "Koda bakma" özelliği: ErrorContext'te FilePath+LineNumber ikisi de doluysa
+  // (compile/test hataları) LLM prompt'una eklenecek kod kesiti için bu dosyanın
+  // içeriği çekilir. Dosya bulunamazsa (silinmiş, yanlış path, vb.) null dönülür -
+  // exception dışa sızdırılmaz, çağıran taraf (Program.cs) kod kesiti olmadan devam
+  // eder. Ağ/izin gibi diğer hatalar ise olduğu gibi yukarı fırlatılır; Program.cs
+  // zaten bunu try-catch ile ele alıyor.
+  public async Task<string?> GetFileContentAsync(string owner, string repo, string path, string ref_)
+  {
+    IReadOnlyList<RepositoryContent> contents;
+    try
+    {
+      contents = await _client.Repository.Content.GetAllContentsByRef(owner, repo, path, ref_);
+    }
+    catch (NotFoundException)
+    {
+      return null;
+    }
+
+    if (contents.Count == 0)
+      return null;
+
+    var file = contents[0];
+
+    // Octokit .Content, .EncodedContent'i base64'ten zaten decode edilmiş halde
+    // döner. EncodedContent'e sadece Content boşsa (beklenmedik/farklı bir durum
+    // için savunma amaçlı) düşüyoruz.
+    if (!string.IsNullOrEmpty(file.Content))
+      return file.Content;
+
+    if (!string.IsNullOrEmpty(file.EncodedContent))
+      return Encoding.UTF8.GetString(Convert.FromBase64String(file.EncodedContent));
+
+    return null;
   }
 }

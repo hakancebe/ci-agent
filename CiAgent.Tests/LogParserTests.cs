@@ -113,7 +113,33 @@ public class LogParserTests
 
         var (filePath, lineNumber, errorMessage) = LogParser.ExtractTestFailure(stepBlock);
 
-        Assert.Equal("CalculatorTests.cs", filePath);
+        // Runner path'i "/home/runner/work/ci-agent-pilot/ci-agent-pilot/" iki kez
+        // tekrarlıyor - bu sabit önek atılıp geriye repo kökünden itibaren relative
+        // path kalmalı (GetFileContentAsync Contents API'yi bu formatta bekliyor).
+        Assert.Equal("tests/CiPilot.Core.Tests/CalculatorTests.cs", filePath);
+        Assert.Equal(12, lineNumber);
+        Assert.Contains("Values differ", errorMessage);
+    }
+
+    [Fact]
+    public void ExtractTestFailure_LeavesPathUnchanged_WhenRunnerWorkPrefixDoesNotMatch()
+    {
+        // Lokal/farklı bir CI ortamında runner path'i GitHub Actions'ın "/home/runner/work/
+        // {repo}/{repo}/" kalıbına uymayabilir - bu durumda path olduğu gibi bırakılmalı.
+        var stepBlock = """
+        ##[group]Run dotnet test --no-build -c Release
+          Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [2 ms]
+          Error Message:
+           Assert.Equal() Failure: Values differ
+        Expected: 5
+        Actual:   4
+          Stack Trace:
+             at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /builds/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+        """;
+
+        var (filePath, lineNumber, errorMessage) = LogParser.ExtractTestFailure(stepBlock);
+
+        Assert.Equal("/builds/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs", filePath);
         Assert.Equal(12, lineNumber);
         Assert.Contains("Values differ", errorMessage);
     }
@@ -203,10 +229,32 @@ public class LogParserTests
 
         var (filePath, lineNumber, errorMessage) = LogParser.ExtractGenericError(stepBlock);
 
-        Assert.Equal("Calculator.cs", Path.GetFileName(filePath));
+        // Stack trace regex'inde olduğu gibi runner'ın "/home/runner/work/{repo}/{repo}/"
+        // önekini atıp repo kökünden itibaren relative path kalmalı (GetFileContentAsync
+        // Contents API'yi bu formatta bekliyor).
+        Assert.Equal("src/CiPilot.Core/Calculator.cs", filePath);
         Assert.Equal(5, lineNumber);
         Assert.Contains("CS1002", errorMessage);
         Assert.Contains("; expected", errorMessage);
+    }
+
+    [Fact]
+    public void ExtractGenericError_LeavesCompilerErrorPathUnchanged_WhenRunnerWorkPrefixDoesNotMatch()
+    {
+        var stepBlock = """
+    ##[group]Run dotnet build --no-restore -c Release
+    dotnet build --no-restore -c Release
+    ##[endgroup]
+    ##[error]/builds/ci-agent-pilot/src/CiPilot.Core/Calculator.cs(5,42): error CS1002: ; expected [/builds/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj]
+
+    Build FAILED.
+    """;
+
+        var (filePath, lineNumber, errorMessage) = LogParser.ExtractGenericError(stepBlock);
+
+        Assert.Equal("/builds/ci-agent-pilot/src/CiPilot.Core/Calculator.cs", filePath);
+        Assert.Equal(5, lineNumber);
+        Assert.Contains("CS1002", errorMessage);
     }
 
     [Fact]

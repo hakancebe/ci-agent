@@ -37,6 +37,8 @@ public class LlmService
         - Sadece verilen veriye dayan, tahmin uydurma.
         - Log yetersizse confidence alanını "low" yap ve bunu rootCause'da belirt.
         - suggestedFix somut ve uyanabilir olsun (hangi dosyada ne değişecek).
+        - Kod kesiti verilmişse (>> işaretli satır), suggestedFix'te bu satıra somut ve
+          uygulanabilir bir değişiklik öner, genel tavsiye verme.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
@@ -156,6 +158,18 @@ public class LlmService
             sb.AppendLine("Ham log kesiti:");
             sb.AppendLine("```");
             sb.AppendLine(Masker.Mask(ctx.RawStepLog));
+            sb.AppendLine("```");
+        }
+
+        // Masker.Mask'tan bilinçli olarak GEÇİRİLMİYOR: bu kaynak kod, log değil.
+        // Maskeleme kuralları (email, token regex'leri) kaynak kodda yanlış pozitif
+        // üretebilir (örn. bir değişken adında "password" geçen kod satırı bozulur).
+        if (!string.IsNullOrWhiteSpace(ctx.CodeSnippet))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"İlgili kod (satır {ctx.LineNumber} civarı, >> işaretli satır hatanın olduğu satır):");
+            sb.AppendLine("```");
+            sb.AppendLine(ctx.CodeSnippet);
             sb.AppendLine("```");
         }
 
