@@ -4,3 +4,4 @@ obj/
 *.user
 .vs/
 .env
+.DS_Store
