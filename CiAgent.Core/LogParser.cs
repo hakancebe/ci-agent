@@ -139,29 +139,10 @@ public static class LogParser
         RegexOptions.Singleline,
         matchTimeout: TimeSpan.FromSeconds(2));
 
-    // Path karakter sınıfı ([\w./-]) runner'ın tam absolute path'ini (örn.
-    // "/home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/.../Foo.cs") olduğu gibi
-    // yakalar - filtreleme StripRunnerWorkPrefix'te ayrı bir adımda yapılıyor.
     private static readonly Regex StackTraceFileLineRegex = new(
-        @"in\s+(?<path>[\w./-]+\.cs):line\s+(?<line>\d+)",
+        @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)",
         RegexOptions.None,
         matchTimeout: TimeSpan.FromSeconds(2));
-
-    // GitHub Actions runner checkout path'i "/home/runner/work/{repo}/{repo}/" şeklinde
-    // repo adını iki kez tekrarlıyor (work dizini + içindeki checkout dizini aynı isimde).
-    // Bu sabit öneki atıp geriye repo kökünden itibaren relative path'i bırakıyoruz -
-    // GitHubService.GetFileContentAsync Contents API'yi repo-relative path bekliyor.
-    // Eşleşmezse (lokal/farklı runner ortamı) path olduğu gibi bırakılır.
-    private static readonly Regex RunnerWorkPrefixRegex = new(
-        @"^/home/runner/work/(?<repo>[^/]+)/\k<repo>/",
-        RegexOptions.None,
-        matchTimeout: TimeSpan.FromSeconds(2));
-
-    private static string StripRunnerWorkPrefix(string path)
-    {
-        var match = RunnerWorkPrefixRegex.Match(path);
-        return match.Success ? path[match.Length..] : path;
-    }
 
     // RawBlock: bu failure'a ait "Failed <ad> [...] ... Stack Trace: ..." metninin
     // TAMAMI (regex eşleşmesinin kendisi) - BuildFilteredTestLog'un konumu bilinmeyen
@@ -177,8 +158,8 @@ public static class LogParser
             var stackMatch = StackTraceFileLineRegex.Match(m.Groups["stack"].Value);
             failures.Add(new NamedTestFailure(
                 m.Groups["name"].Value,
-                stackMatch.Success ? StripRunnerWorkPrefix(stackMatch.Groups["path"].Value) : null,
-                stackMatch.Success ? int.Parse(stackMatch.Groups["line"].Value) : null,
+                stackMatch.Success ? stackMatch.Groups[1].Value : null,
+                stackMatch.Success ? int.Parse(stackMatch.Groups[2].Value) : null,
                 m.Groups["msg"].Value.Trim(),
                 m.Value.TrimEnd()));
         }
@@ -224,7 +205,7 @@ public static class LogParser
         if (compilerMatch.Success)
         {
             return new TestFailure(
-                StripRunnerWorkPrefix(compilerMatch.Groups["path"].Value),
+                compilerMatch.Groups["path"].Value,
                 int.Parse(compilerMatch.Groups["line"].Value),
                 $"{compilerMatch.Groups["code"].Value}: {compilerMatch.Groups["msg"].Value}");
         }
