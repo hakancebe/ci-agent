@@ -30,7 +30,9 @@ public class ReportService
     /// PR/commit yorumu atarken oluşan hatalar (izin, erişim vb.) yutulur ve
     /// loglanır; süreç asla bu yüzden patlamaz, sadece Job Summary'ye düşer.
     /// </summary>
-    public async Task ReportAsync(
+    // virtual: CiAnalysisPipeline testleri GitHub'a hiç dokunmadan "raporlandı mı"
+    // sorusunu doğrulayabilsin diye override edilebiliyor.
+    public virtual async Task ReportAsync(
         AnalysisResult result,
         ErrorContext context,
         string owner,
@@ -200,34 +202,113 @@ public class ReportService
         sb.AppendLine($"**Job:** `{context.JobName}`  ");
         sb.AppendLine($"**Başarısız adım:** `{context.FailedStepName}`  ");
 
-        if (!string.IsNullOrWhiteSpace(context.FilePath))
-            sb.AppendLine($"**Konum:** `{context.FilePath}:{context.LineNumber}`  ");
+        var groups = FailureGrouper.Group(context.Failures);
+        if (groups.Count > 0)
+            sb.AppendLine($"**Tespit edilen hata:** {FailureCountLabel(groups)}  ");
 
-        sb.AppendLine($"**Güven düzeyi:** {ConfidenceBadge(result.Confidence)}");
         sb.AppendLine();
+
+        // Analiz eksik veriyle yapıldıysa bunu okuyucuya en başta söylüyoruz -
+        // aşağıdaki kök nedenler "tüm kanıta bakılarak" bulunmuş izlenimi vermesin.
+        if (!string.IsNullOrWhiteSpace(result.ReductionNote))
+        {
+            sb.AppendLine($"> ⚠️ {result.ReductionNote}");
+            sb.AppendLine();
+        }
 
         sb.AppendLine("### 📋 Özet");
         sb.AppendLine(result.Summary);
         sb.AppendLine();
 
-        sb.AppendLine("### 🔍 Kök Neden");
-        sb.AppendLine(result.RootCause);
-        sb.AppendLine();
-
-        sb.AppendLine("### 🛠️ Önerilen Çözüm");
-        sb.AppendLine(result.SuggestedFix);
-
-        if (!string.IsNullOrWhiteSpace(result.AffectedFile))
+        // Kök nedenler: tek analiz varsa başlıksız tek bölüm, birden fazlaysa
+        // numaralı bölümler. LLM 5 hatayı tek kök nedene bağladıysa okuyucu tek
+        // bölüm görür - bu, gruplamanın işe yaradığının da göstergesi.
+        for (var i = 0; i < result.Analyses.Count; i++)
         {
+            var a = result.Analyses[i];
+            var heading = result.Analyses.Count == 1
+                ? "### 🔍 Kök Neden"
+                : $"### 🔍 Kök Neden {i + 1}/{result.Analyses.Count} — {a.Title}";
+
+            sb.AppendLine(heading);
+            sb.AppendLine($"**Güven düzeyi:** {ConfidenceBadge(a.Confidence)}");
             sb.AppendLine();
-            sb.AppendLine($"**Etkilenen dosya:** `{result.AffectedFile}{(result.AffectedLine is int l ? $":{l}" : "")}`");
+            sb.AppendLine(a.RootCause);
+            sb.AppendLine();
+
+            sb.AppendLine("**🛠️ Önerilen Çözüm**");
+            sb.AppendLine(a.SuggestedFix);
+
+            if (!string.IsNullOrWhiteSpace(a.AffectedFile))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"**Etkilenen dosya:** `{a.AffectedFile}{(a.AffectedLine is int l ? $":{l}" : "")}`");
+            }
+
+            sb.AppendLine();
         }
 
-        sb.AppendLine();
+        // Hataların tam listesi katlanmış halde: analiz kısa kalsın ama hiçbir
+        // failure raporda tamamen görünmez olmasın.
+        if (groups.Count > 0)
+            sb.Append(BuildFailureDetails(groups));
+
         sb.AppendLine("---");
         sb.AppendLine($"<sub>Run ID: {runId} · Bu yorum CiAgent tarafından otomatik oluşturuldu; aynı run tekrar analiz edilirse bu yorum güncellenir.</sub>");
 
         return sb.ToString();
+    }
+
+    internal static string FailureCountLabel(List<FailureGroup> groups)
+    {
+        var total = groups.Sum(g => g.Occurrences);
+        return total == groups.Count
+            ? $"{groups.Count} hata"
+            : $"{groups.Count} farklı hata ({total} tekrar)";
+    }
+
+    /// <summary>
+    /// Tüm hata gruplarını &lt;details&gt; içinde listeler. Yorum gövdesi şişmesin diye
+    /// katlanmış; ama LLM bir hatayı analizde atlasa bile ham kayıt raporda kalır.
+    /// </summary>
+    private static string BuildFailureDetails(List<FailureGroup> groups)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("<details>");
+        sb.AppendLine($"<summary>Tespit edilen tüm hatalar ({groups.Count})</summary>");
+        sb.AppendLine();
+
+        foreach (var g in groups)
+        {
+            var f = g.Representative;
+            var label = g.Names.Count > 0 ? string.Join(", ", g.Names) : f.Kind.ToString();
+            // Restore hatalarında satır no yok - "csproj:" gibi sarkan iki nokta olmasın.
+            var location = f.FilePath is not null
+                ? $" — `{f.FilePath}{(f.LineNumber is int ln ? $":{ln}" : "")}`"
+                : "";
+            var repeat = g.Occurrences > 1
+                ? $" _(aynı hata {g.Occurrences} kez: {string.Join(", ", g.JobNames)})_"
+                : "";
+
+            sb.AppendLine($"- **{label}**{location}{repeat}");
+            // Mesaj tek satıra sıkıştırılıyor: çok satırlı assert çıktıları liste
+            // yapısını bozmasın.
+            sb.AppendLine($"  `{OneLine(f.Message)}`");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("</details>");
+        sb.AppendLine();
+
+        return sb.ToString();
+    }
+
+    private static string OneLine(string message)
+    {
+        var collapsed = string.Join(" ", message.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                                                .Select(l => l.Trim()));
+        return collapsed.Length > 300 ? collapsed[..300] + "…" : collapsed;
     }
 
     private static string ConfidenceBadge(string confidence) => confidence.ToLowerInvariant() switch
@@ -283,22 +364,34 @@ public class ReportService
             return sb.ToString();
         }
 
+        var groups = FailureGrouper.Group(context.Failures);
+
         sb.AppendLine("## 🤖 CiAgent Analiz Özeti");
         sb.AppendLine();
         sb.AppendLine($"- **Job:** `{context.JobName}`");
         sb.AppendLine($"- **Başarısız adım:** `{context.FailedStepName}`");
-        sb.AppendLine($"- **Güven düzeyi:** {ConfidenceBadge(result.Confidence)}");
+
+        if (groups.Count > 0)
+            sb.AppendLine($"- **Tespit edilen hata:** {FailureCountLabel(groups)}");
 
         if (!postedToGitHub)
             sb.AppendLine("- ⚠️ PR/commit yorumu atılamadı (izin veya erişim kısıtlı olabilir) — tek çıktı bu özet.");
 
+        if (!string.IsNullOrWhiteSpace(result.ReductionNote))
+            sb.AppendLine($"- ⚠️ {result.ReductionNote}");
+
         sb.AppendLine();
         sb.AppendLine($"**Özet:** {result.Summary}");
         sb.AppendLine();
-        sb.AppendLine($"**Kök Neden:** {result.RootCause}");
-        sb.AppendLine();
-        sb.AppendLine($"**Önerilen Çözüm:** {result.SuggestedFix}");
-        sb.AppendLine();
+
+        foreach (var a in result.Analyses)
+        {
+            var heading = result.Analyses.Count == 1 ? "Kök Neden" : $"Kök Neden — {a.Title}";
+            sb.AppendLine($"**{heading}** ({ConfidenceBadge(a.Confidence)}): {a.RootCause}");
+            sb.AppendLine();
+            sb.AppendLine($"**Önerilen Çözüm:** {a.SuggestedFix}");
+            sb.AppendLine();
+        }
 
         return sb.ToString();
     }

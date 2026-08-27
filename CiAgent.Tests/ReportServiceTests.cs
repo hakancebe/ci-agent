@@ -40,17 +40,34 @@ public class ReportServiceTests
     {
         JobName = "build",
         FailedStepName = "dotnet test",
-        FilePath = "Foo.cs",
-        LineNumber = 42,
-        ErrorMessage = "NullReferenceException"
+        Failures =
+        {
+            new Failure
+            {
+                Kind = FailureKind.Test,
+                Name = "FooTests.Bar",
+                JobName = "build",
+                StepName = "dotnet test",
+                FilePath = "Foo.cs",
+                LineNumber = 42,
+                Message = "NullReferenceException"
+            }
+        }
     };
 
     private static AnalysisResult SampleResult() => new()
     {
         Summary = "Test derlemesi başarısız oldu.",
-        RootCause = "Null referans hatası.",
-        SuggestedFix = "Foo.cs:42'de null kontrolü ekle.",
-        Confidence = "high"
+        Analyses =
+        {
+            new Analysis
+            {
+                Title = "Null referans",
+                RootCause = "Null referans hatası.",
+                SuggestedFix = "Foo.cs:42'de null kontrolü ekle.",
+                Confidence = "high"
+            }
+        }
     };
 
     // ---------------------------------------------------------------
@@ -80,13 +97,117 @@ public class ReportServiceTests
 
         Assert.Contains("### 📋 Özet", body);
         Assert.Contains("### 🔍 Kök Neden", body);
-        Assert.Contains("### 🛠️ Önerilen Çözüm", body);
+        Assert.Contains("**🛠️ Önerilen Çözüm**", body);
         Assert.Contains("Test derlemesi başarısız oldu.", body);
         Assert.Contains("Null referans hatası.", body);
         Assert.Contains("Foo.cs:42'de null kontrolü ekle.", body);
         Assert.Contains("`build`", body);
         Assert.Contains("`dotnet test`", body);
         Assert.Contains("Foo.cs:42", body);
+    }
+
+    [Fact]
+    public void BuildCommentBody_AnalizEksikVeriyleYapildiysaUyariGosterir()
+    {
+        var result = new AnalysisResult
+        {
+            Summary = "Test başarısız.",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "Null referans",
+                    RootCause = "Null referans.",
+                    SuggestedFix = "Null kontrolü ekle.",
+                    Confidence = "medium"
+                }
+            },
+            ReductionNote = "Prompt 50.000 karakter limitine sığması için şunlar çıkarıldı: ham log kesiti."
+        };
+
+        var body = ReportService.BuildCommentBody(result, SampleContext(), runId: 123);
+
+        // Uyarı, kök nedenden ÖNCE görünmeli - okuyucu analizin eksik veriye
+        // dayandığını sonuçları okumadan bilmeli.
+        Assert.Contains("ham log kesiti", body);
+        Assert.True(body.IndexOf("ham log kesiti", StringComparison.Ordinal)
+                    < body.IndexOf("### 🔍 Kök Neden", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BuildCommentBody_TamPromptGittiyseUyariGostermez()
+    {
+        var body = ReportService.BuildCommentBody(SampleResult(), SampleContext(), runId: 123);
+
+        Assert.DoesNotContain("çıkarıldı", body);
+    }
+
+    [Fact]
+    public void BuildCommentBody_BirdenFazlaKokNedeniNumaraliBolumlerHalindeYazar()
+    {
+        var result = new AnalysisResult
+        {
+            Summary = "İki bağımsız sorun var.",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "Eksik NuGet paketi", RootCause = "Paket bulunamadı",
+                    SuggestedFix = "Referansı kaldır", Confidence = "high"
+                },
+                new Analysis
+                {
+                    Title = "Calculator.Add hatalı", RootCause = "Yanlış operatör",
+                    SuggestedFix = "return a + b", Confidence = "medium"
+                }
+            }
+        };
+
+        var body = ReportService.BuildCommentBody(result, SampleContext(), runId: 123);
+
+        Assert.Contains("### 🔍 Kök Neden 1/2 — Eksik NuGet paketi", body);
+        Assert.Contains("### 🔍 Kök Neden 2/2 — Calculator.Add hatalı", body);
+        // Her analiz kendi güven düzeyini taşımalı - tek bir üst seviye rozet yok.
+        Assert.Contains("🟢 Yüksek", body);
+        Assert.Contains("🟡 Orta", body);
+    }
+
+    [Fact]
+    public void BuildCommentBody_TekKokNedendeNumaralandirmaYapmaz()
+    {
+        var body = ReportService.BuildCommentBody(SampleResult(), SampleContext(), runId: 123);
+
+        Assert.Contains("### 🔍 Kök Neden", body);
+        Assert.DoesNotContain("Kök Neden 1/1", body);
+    }
+
+    [Fact]
+    public void BuildCommentBody_TekrarlananHatalariTekSatirdaSayarak_TumHatalariListeler()
+    {
+        var context = new ErrorContext
+        {
+            JobName = "build (ubuntu), build (windows)",
+            FailedStepName = "Test",
+            Failures =
+            {
+                new Failure { Kind = FailureKind.Test, Name = "CalcTests.Add", JobName = "build (ubuntu)",
+                              FilePath = "src/Calc.cs", LineNumber = 12, Message = "Values differ" },
+                new Failure { Kind = FailureKind.Test, Name = "CalcTests.Add", JobName = "build (windows)",
+                              FilePath = "src/Calc.cs", LineNumber = 12, Message = "Values differ" },
+                new Failure { Kind = FailureKind.Restore, JobName = "deploy",
+                              Message = "NU1101: paket yok" }
+            }
+        };
+
+        var body = ReportService.BuildCommentBody(SampleResult(), context, runId: 123);
+
+        // 2 farklı hata, toplam 3 tekrar.
+        Assert.Contains("2 farklı hata (3 tekrar)", body);
+        // Katlanmış detay bloğunda her iki hata da görünmeli.
+        Assert.Contains("<details>", body);
+        Assert.Contains("CalcTests.Add", body);
+        Assert.Contains("NU1101: paket yok", body);
+        Assert.Contains("aynı hata 2 kez: build (ubuntu), build (windows)", body);
     }
 
     [Fact]
@@ -344,8 +465,15 @@ public class ReportServiceTests
         {
             JobName = "build-test",
             FailedStepName = "Test",
-            FilePath = "src/Calculator.cs",
-            LineNumber = 42
+            Failures =
+            {
+                new Failure
+                {
+                    Kind = FailureKind.Test, Name = "CalculatorTests.Add",
+                    FilePath = "src/Calculator.cs", LineNumber = 42,
+                    Message = "Values differ"
+                }
+            }
         };
 
         var body = ReportService.BuildCommentBody(result, context, runId: 999);

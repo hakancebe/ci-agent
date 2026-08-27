@@ -30,13 +30,22 @@ public class LlmService
     private const int MaxPromptChars = 50_000;
 
     private const string SystemPrompt = """
-        Sen bir CI/CD hata analiz asistanısın. Sana bir GitHub Actions job'ının
-        başarısız olan adımına ait log kesiti ve metadata verilecek.
+        Sen bir CI/CD hata analiz asistanısın. Sana bir GitHub Actions run'ının
+        başarısız olan job/adımlarına ait hatalar, log kesiti ve metadata verilecek.
 
         Kurallar:
         - Sadece verilen veriye dayan, tahmin uydurma.
-        - Log yetersizse confidence alanını "low" yap ve bunu rootCause'da belirt.
-        - suggestedFix somut ve uyanabilir olsun (hangi dosyada ne değişecek).
+        - En önemlisi: KÖK NEDENE göre grupla. Birden fazla hata AYNI kök nedenden
+          geliyorsa (ör. 5 test tek bir bozuk metot yüzünden patlıyorsa) bunları TEK
+          bir analysis elemanında birleştir; hangi hataları kapsadığını rootCause'da
+          söyle. Yalnızca gerçekten BAĞIMSIZ sorunlar için ayrı eleman üret.
+        - analyses listesi hata sayısı kadar uzun OLMAK ZORUNDA DEĞİL; genelde çok
+          daha kısadır.
+        - summary tüm run'ı tek cümlede özetlesin.
+        - Her analysis için title kısa bir başlık olsun (raporda bölüm adı olacak).
+        - Log yetersizse o analysis'in confidence alanını "low" yap ve bunu
+          rootCause'da belirt.
+        - suggestedFix somut ve uygulanabilir olsun (hangi dosyada ne değişecek).
         - Kod kesiti verilmişse (>> işaretli satır), suggestedFix'te bu satıra somut ve
           uygulanabilir bir değişiklik öner, genel tavsiye verme.
         - Türkçe cevap ver.
@@ -47,14 +56,25 @@ public class LlmService
         {
           "type": "object",
           "properties": {
-            "summary":      { "type": "string" },
-            "rootCause":    { "type": "string" },
-            "suggestedFix": { "type": "string" },
-            "confidence":   { "type": "string", "enum": ["high", "medium", "low"] },
-            "affectedFile": { "type": ["string", "null"] },
-            "affectedLine": { "type": ["integer", "null"] }
+            "summary": { "type": "string" },
+            "analyses": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "title":        { "type": "string" },
+                  "rootCause":    { "type": "string" },
+                  "suggestedFix": { "type": "string" },
+                  "confidence":   { "type": "string", "enum": ["high", "medium", "low"] },
+                  "affectedFile": { "type": ["string", "null"] },
+                  "affectedLine": { "type": ["integer", "null"] }
+                },
+                "required": ["title", "rootCause", "suggestedFix", "confidence", "affectedFile", "affectedLine"],
+                "additionalProperties": false
+              }
+            }
           },
-          "required": ["summary", "rootCause", "suggestedFix", "confidence", "affectedFile", "affectedLine"],
+          "required": ["summary", "analyses"],
           "additionalProperties": false
         }
         """;
@@ -90,16 +110,64 @@ public class LlmService
         return completion.Content[0].Text;
     }
 
+    // Geçici hatalarda (429 rate limit, 500/502/503/504, ağ kesintisi) tek denemede
+    // pes etmek yazık: CI'da paralel job'lar aynı anda Azure OpenAI'a vurduğunda 429
+    // sıradan bir olay. Kalıcı hatalarda (401 yanlış key, 404 yanlış deployment adı)
+    // beklemek anlamsız - onlar hemen yukarı fırlıyor.
+    private const int MaxAttempts = 3;
+
+    // Test override edebilsin diye virtual: gerçek bekleme yapmadan retry sayılabiliyor.
+    internal virtual Task DelayAsync(TimeSpan duration) => Task.Delay(duration);
+
+    private async Task<string> CompleteWithRetryAsync(
+        List<ChatMessage> messages, ChatCompletionOptions options)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await CompleteAsync(messages, options);
+            }
+            catch (Exception ex) when (attempt < MaxAttempts && IsTransient(ex))
+            {
+                // 2sn, 4sn: CI job'ının toplam süresini anlamlı ölçüde uzatmayan,
+                // ama kısa rate-limit penceresini atlatmaya yeten bir bekleme.
+                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                Console.Error.WriteLine(
+                    $"[LlmService] Deneme {attempt}/{MaxAttempts} geçici hatayla başarısız "
+                    + $"({ex.GetType().Name}: {ex.Message}). {delay.TotalSeconds:0}sn sonra tekrar denenecek.");
+                await DelayAsync(delay);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Tekrar denemeye değer mi? Status kodu okunabiliyorsa ona bakıyoruz;
+    /// okunamıyorsa (saf ağ/timeout hatası) geçici sayıyoruz.
+    /// </summary>
+    internal static bool IsTransient(Exception ex) => ex switch
+    {
+        ClientResultException cre => cre.Status is 408 or 429 or 500 or 502 or 503 or 504,
+        HttpRequestException => true,
+        TaskCanceledException => true,   // HttpClient timeout'u bu şekilde yüzeye çıkıyor
+        _ => false
+    };
+
     public async Task<AnalysisResult?> AnalyzeAsync(ErrorContext context)
     {
-        // Prompt BİR KEZ üretilip ölçülüyor; eşik aşılırsa Azure OpenAI'a hiç
-        // istek atılmıyor. Dönen sonuç null değil "atlandı" durumu - null olsaydı
-        // Program.cs erken return edip raporu hiç atmazdı, yani durum sessizce
-        // kaybolurdu.
-        var prompt = BuildPrompt(context);
+        // Limit aşıldığında eskiden analiz TAMAMEN atlanıyordu ("ya hep ya hiç").
+        // Artık kademeli düşüş: en zengin prompt'tan başlayıp sığana kadar bilgi
+        // katmanlarını en az değerliden başlayarak çıkarıyoruz. Kullanıcı için en
+        // kötü sonuç "büyük log geldi, hiçbir şey söylemedim" - bu merdiven onu
+        // yalnızca gerçekten hiçbir şeyin sığmadığı durumla sınırlıyor.
+        var (prompt, budget) = FitPrompt(context);
 
-        if (prompt.Length > MaxPromptChars)
-            return AnalysisResult.ForSkipped(prompt.Length, MaxPromptChars);
+        if (prompt is null)
+        {
+            // Hiçbir kademe sığmadı: hata mesajının kendisi tek başına limitin
+            // üstünde (patolojik ama mümkün - ör. devasa bir assert diff'i).
+            return AnalysisResult.ForSkipped(BuildPrompt(context).Length, MaxPromptChars);
+        }
 
         var options = new ChatCompletionOptions
         {
@@ -117,26 +185,130 @@ public class LlmService
             new UserChatMessage(prompt)
         ];
 
-        var json = await CompleteAsync(messages, options);
+        var json = await CompleteWithRetryAsync(messages, options);
 
         //json to AnalysisResult type
-        return JsonSerializer.Deserialize<AnalysisResult>(json);
+        var result = JsonSerializer.Deserialize<AnalysisResult>(json);
+
+        // Bir şey feda edildiyse bunu sonuca iliştiriyoruz ki rapor "analiz eksik
+        // veriyle yapıldı" diyebilsin - sessizce kaybolmasın.
+        if (result is not null && budget.Describe(context) is string note)
+            result.ReductionNote = note;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Prompt bütçesi: hangi bilgi katmanlarının prompt'a dahil edileceği.
+    /// Varsayılan (<see cref="Full"/>) hiçbir şey feda etmez.
+    /// </summary>
+    internal sealed record PromptBudget(
+        bool IncludeRawLog = true,
+        bool IncludeCodeSnippets = true,
+        int? MaxFailures = null)
+    {
+        public static readonly PromptBudget Full = new();
+
+        public bool IsFull => IncludeRawLog && IncludeCodeSnippets && MaxFailures is null;
+
+        /// <summary>Feda edilenlerin insan tarafından okunabilir özeti; tam bütçede null.</summary>
+        public string? Describe(ErrorContext ctx)
+        {
+            if (IsFull) return null;
+
+            var dropped = new List<string>();
+            if (!IncludeRawLog) dropped.Add("ham log kesiti");
+            if (!IncludeCodeSnippets) dropped.Add("kod kesitleri");
+            if (MaxFailures is int n)
+                dropped.Add($"{FailureGrouper.Group(ctx.Failures).Count} farklı hatadan yalnızca ilk {n}'i");
+
+            return $"Prompt {MaxPromptChars:N0} karakter limitine sığması için şunlar çıkarıldı: "
+                 + string.Join(", ", dropped) + ".";
+        }
+    }
+
+    /// <summary>
+    /// Sığana kadar bütçe kademelerini sırayla dener. Sıra, bilginin analiz değerine
+    /// göre: ham log önce gider (ayrıştırılmış mesajın büyük ölçüde tekrarı), sonra
+    /// kod kesitleri, en son hata sayısı kırpılır. Annotation'lar hiç kırpılmıyor -
+    /// ölçülen en büyük annotation yükü ~7 KB, yani limiti asla tek başına zorlamıyor,
+    /// buna karşılık GitHub'ın yapılandırılmış hata verisi olarak değeri yüksek.
+    /// Hiçbiri sığmazsa (null, _) döner.
+    /// </summary>
+    internal static (string? Prompt, PromptBudget Budget) FitPrompt(ErrorContext ctx)
+    {
+        var ladder = new List<PromptBudget>
+        {
+            PromptBudget.Full,
+            new(IncludeRawLog: false),
+            new(IncludeRawLog: false, IncludeCodeSnippets: false),
+        };
+
+        // Son çare: gösterilen hata GRUBU sayısını azalt. Yalnızca Failures listesi
+        // doluysa anlamlı - kırpma hem kod kesitlerini hem ayrıştırılmış mesajı küçültür.
+        // Tekrarlar zaten gruplandığı için buradaki kırpma gerçekten farklı hataları
+        // eler, aynı hatanın kopyalarını değil.
+        for (var n = FailureGrouper.Group(ctx.Failures).Count - 1; n >= 1; n--)
+            ladder.Add(new PromptBudget(IncludeRawLog: false, IncludeCodeSnippets: false, MaxFailures: n));
+
+        foreach (var budget in ladder)
+        {
+            var prompt = BuildPrompt(ctx, budget);
+            if (prompt.Length <= MaxPromptChars)
+                return (prompt, budget);
+        }
+
+        return (null, PromptBudget.Full);
     }
 
     // internal (private değil): AnalyzeAsync'in ölçtüğü uzunluk testlerden
     // doğrudan doğrulanabilsin diye (bkz. AssemblyInfo.cs -> InternalsVisibleTo).
-    internal static string BuildPrompt(ErrorContext ctx)
+    // Bütçesiz overload = hiçbir şey feda edilmemiş tam prompt.
+    internal static string BuildPrompt(ErrorContext ctx) => BuildPrompt(ctx, PromptBudget.Full);
+
+    internal static string BuildPrompt(ErrorContext ctx, PromptBudget budget)
     {
         var sb = new StringBuilder();
+
+        // Tekrarları (matrix build'de aynı test N job'da) tek başlıkta topluyoruz;
+        // hata sayısı kırpıldıysa ilk N GRUP gösteriliyor.
+        var allGroups = FailureGrouper.Group(ctx.Failures);
+        var shownGroups = budget.MaxFailures is int max ? allGroups.Take(max).ToList() : allGroups;
 
         sb.AppendLine($"Job adı: {ctx.JobName}");
         sb.AppendLine($"Başarısız adım: {ctx.FailedStepName}");
 
-        if (ctx.ErrorMessage is not null)
-            sb.AppendLine($"Ayrıştırılmış hata mesajı: {Masker.Mask(ctx.ErrorMessage)}");
+        if (shownGroups.Count > 0)
+        {
+            var header = shownGroups.Count < allGroups.Count
+                ? $"Tespit edilen hatalar (toplam {allGroups.Count} farklı hatadan ilk "
+                  + $"{shownGroups.Count}'i — gerisi prompt limiti nedeniyle çıkarıldı):"
+                : $"Tespit edilen hatalar ({allGroups.Count} farklı):";
 
-        if (ctx.FilePath is not null)
-            sb.AppendLine($"Dosya: {ctx.FilePath}:{ctx.LineNumber}");
+            sb.AppendLine();
+            sb.AppendLine(header);
+
+            for (var i = 0; i < shownGroups.Count; i++)
+            {
+                var g = shownGroups[i];
+                var f = g.Representative;
+
+                var label = g.Names.Count > 0 ? string.Join(", ", g.Names) : f.Kind.ToString();
+                var location = f.FilePath is not null
+                    ? $" ({f.FilePath}{(f.LineNumber is int ln ? $":{ln}" : "")})"
+                    : "";
+                // Tekrar sayısı LLM için sinyal: 5 job'da aynı hata = ortam değil kod sorunu.
+                var repeat = g.Occurrences > 1
+                    ? $" [aynı hata {g.Occurrences} kez — job'lar: {string.Join(", ", g.JobNames)}]"
+                    : "";
+
+                sb.AppendLine();
+                sb.AppendLine($"{i + 1}) {label}{location}{repeat}");
+                sb.AppendLine($"   Tip: {f.Kind}, Job: {f.JobName}, Adım: {f.StepName}");
+                sb.AppendLine($"   {Masker.Mask(f.Message)}");
+            }
+            sb.AppendLine();
+        }
 
         if (ctx.FilteredAnnotations.Count > 0)
         {
@@ -147,12 +319,12 @@ public class LlmService
         }
 
         // Tüm hataların dosya:satır konumu zaten kesinse (AllFailuresLocated),
-        // ham log ekstra bilgi katmıyor - sadece ErrorMessage'ın tekrarı oluyor.
+        // ham log ekstra bilgi katmıyor - yukarıdaki hata listesinin tekrarı oluyor.
         // Konum belirsizse (ör. build-cs1002'deki gibi parser'ın telafi
         // edemediği durumlar), LLM'in ham veriden çıkarım yapabilmesi için TAM
-        // hâliyle gönderiliyor - kırpma yok. Fazla büyükse AnalyzeAsync zaten
-        // analizi tamamen atlıyor (MaxPromptChars).
-        if (!string.IsNullOrWhiteSpace(ctx.RawStepLog) && !ctx.AllFailuresLocated)
+        // hâliyle gönderiliyor - kırpma yok. Sığmazsa FitPrompt bu bloğu komple
+        // çıkaran bir alt kademeye geçiyor (kör char-kesme yerine).
+        if (budget.IncludeRawLog && !string.IsNullOrWhiteSpace(ctx.RawStepLog) && !ctx.AllFailuresLocated)
         {
             sb.AppendLine();
             sb.AppendLine("Ham log kesiti:");
@@ -161,16 +333,24 @@ public class LlmService
             sb.AppendLine("```");
         }
 
-        // Masker.Mask'tan bilinçli olarak GEÇİRİLMİYOR: bu kaynak kod, log değil.
-        // Maskeleme kuralları (email, token regex'leri) kaynak kodda yanlış pozitif
-        // üretebilir (örn. bir değişken adında "password" geçen kod satırı bozulur).
-        if (!string.IsNullOrWhiteSpace(ctx.CodeSnippet))
+        // Kod kesitleri Masker.Mask'tan bilinçli olarak GEÇİRİLMİYOR: bu kaynak kod,
+        // log değil. Maskeleme kuralları (email, token regex'leri) kaynak kodda yanlış
+        // pozitif üretebilir (örn. bir değişken adında "password" geçen kod satırı bozulur).
+        //
+        // Grup temsilcisinin kesiti yeterli: aynı gruptaki failure'lar zaten aynı
+        // dosya:satır'da, kesitleri de birebir aynı olurdu.
+        if (budget.IncludeCodeSnippets)
         {
-            sb.AppendLine();
-            sb.AppendLine($"İlgili kod (satır {ctx.LineNumber} civarı, >> işaretli satır hatanın olduğu satır):");
-            sb.AppendLine("```");
-            sb.AppendLine(ctx.CodeSnippet);
-            sb.AppendLine("```");
+            foreach (var f in shownGroups.Select(g => g.Representative)
+                                         .Where(f => !string.IsNullOrWhiteSpace(f.CodeSnippet)))
+            {
+                var label = f.Name is not null ? $"{f.Name} — " : "";
+                sb.AppendLine();
+                sb.AppendLine($"İlgili kod ({label}{f.FilePath}:{f.LineNumber} civarı, >> işaretli satır hatanın olduğu satır):");
+                sb.AppendLine("```");
+                sb.AppendLine(f.CodeSnippet);
+                sb.AppendLine("```");
+            }
         }
 
         return sb.ToString();

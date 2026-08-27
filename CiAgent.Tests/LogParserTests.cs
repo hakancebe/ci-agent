@@ -305,11 +305,15 @@ public class LogParserTests
         var context = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
 
         Assert.NotNull(context);
-        // Her iki testin adı ve mesajı da ErrorMessage'da yer almalı - hiçbiri gizlenmemeli.
-        Assert.Contains("Add_ReturnsSum", context!.ErrorMessage);
-        Assert.Contains("ThrowsUnexpectedException", context.ErrorMessage);
-        Assert.Contains("InvalidOperationException", context.ErrorMessage);
-        Assert.Contains("Values differ", context.ErrorMessage);
+        // Her iki test de kendi Failure'ıyla listede olmalı - hiçbiri gizlenmemeli.
+        Assert.Equal(2, context!.Failures.Count);
+
+        var add = context.Failures.Single(f => f.Name!.EndsWith("Add_ReturnsSum"));
+        Assert.Contains("Values differ", add.Message);
+
+        var thrown = context.Failures.Single(f => f.Name!.EndsWith("ThrowsUnexpectedException"));
+        Assert.Contains("InvalidOperationException", thrown.Message);
+
         // Post job cleanup gürültüsü RawStepLog'a sızmamalı.
         Assert.DoesNotContain("Post job cleanup", context.RawStepLog);
     }
@@ -371,15 +375,16 @@ public class LogParserTests
         Assert.Contains("ThrowsFromUnknownLocation", context.RawStepLog);
         Assert.Contains("System.RuntimeMethodHandle.InvokeMethod", context.RawStepLog);
         // Konumu zaten bilinen failure'ın stack trace satırı RawStepLog'a girmemeli
-        // (ErrorMessage'da zaten var, tekrar token harcamaya gerek yok).
+        // (Failure.FilePath/LineNumber'da zaten var, tekrar token harcamaya gerek yok).
         Assert.DoesNotContain("CalculatorTests.cs:line 12", context.RawStepLog);
         // Atlandığına dair not düşülmeli.
         Assert.Contains("1 konumu bilinen test için ham stack trace atlandı", context.RawStepLog);
         // Özet satırı korunmalı.
         Assert.Contains("Failed:     2, Passed:     1", context.RawStepLog);
-        // ErrorMessage (ayrıştırılmış özet) her iki testi de eksiksiz içermeli.
-        Assert.Contains("Add_ReturnsSum", context.ErrorMessage);
-        Assert.Contains("ThrowsFromUnknownLocation", context.ErrorMessage);
+        // Her iki test de Failures'ta eksiksiz durmalı.
+        Assert.Equal(2, context.Failures.Count);
+        Assert.Contains(context.Failures, f => f.Name!.EndsWith("Add_ReturnsSum"));
+        Assert.Contains(context.Failures, f => f.Name!.EndsWith("ThrowsFromUnknownLocation"));
     }
 
     [Fact]
@@ -469,6 +474,244 @@ public class LogParserTests
         Assert.Contains("exit code 1", context.RawStepLog);
     }
 
+    // --- Adım 1: Failures liste modeli --------------------------------
+
+    private static Octokit.WorkflowJob FailedJob(string jobName, string stepName) =>
+        new(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow,
+            startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: jobName,
+            steps: new List<Octokit.WorkflowJobStep>
+            {
+                new(name: stepName,
+                    status: Octokit.WorkflowJobStatus.Completed,
+                    conclusion: Octokit.WorkflowJobConclusion.Failure,
+                    number: 1,
+                    startedAt: DateTimeOffset.UtcNow,
+                    completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "",
+            labels: new List<string>());
+
+    [Fact]
+    public void BuildErrorContext_PopulatesOneFailurePerFailingTest_WithOwnLocation()
+    {
+        var log = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [28 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+    Expected: 350
+    Actual:   4
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+      Failed CiPilot.Core.Tests.CalculatorTests.Sub_ReturnsDiff [1 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Sub_ReturnsDiff() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 20
+
+    Failed!  - Failed:     2, Passed:     1, Skipped:     0, Total:     3, Duration: 122 ms - CiPilot.Core.Tests.dll (net8.0)
+    """;
+
+        var context = LogParser.BuildErrorContext(FailedJob("build-test", "Test"), Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        Assert.Equal(2, context!.Failures.Count);
+        Assert.All(context.Failures, f => Assert.Equal(FailureKind.Test, f.Kind));
+
+        var add = context.Failures.Single(f => f.Name!.EndsWith("Add_ReturnsSum"));
+        Assert.Equal("tests/CiPilot.Core.Tests/CalculatorTests.cs", add.FilePath);
+        Assert.Equal(12, add.LineNumber);
+        Assert.True(add.IsLocated);
+        Assert.Null(add.RawEvidence);   // konumu bilindiği için ham kanıta gerek yok
+
+        var sub = context.Failures.Single(f => f.Name!.EndsWith("Sub_ReturnsDiff"));
+        Assert.Equal(20, sub.LineNumber);
+    }
+
+    [Fact]
+    public void BuildErrorContext_KeepsRawEvidence_OnlyForUnlocatedFailures()
+    {
+        var log = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [28 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+      Failed CiPilot.Core.Tests.CalculatorTests.ThrowsFromUnknownLocation [< 1 ms]
+      Error Message:
+       System.InvalidOperationException : Beklenmeyen hata
+      Stack Trace:
+         at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+
+    Failed!  - Failed:     2, Passed:     1, Skipped:     0, Total:     3, Duration: 122 ms - CiPilot.Core.Tests.dll (net8.0)
+    """;
+
+        var context = LogParser.BuildErrorContext(FailedJob("build-test", "Test"), Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        Assert.False(context!.AllFailuresLocated);
+
+        var located = context.Failures.Single(f => f.Name!.EndsWith("Add_ReturnsSum"));
+        Assert.Null(located.RawEvidence);
+
+        var unlocated = context.Failures.Single(f => f.Name!.EndsWith("ThrowsFromUnknownLocation"));
+        Assert.False(unlocated.IsLocated);
+        Assert.NotNull(unlocated.RawEvidence);
+        Assert.Contains("System.RuntimeMethodHandle.InvokeMethod", unlocated.RawEvidence);
+    }
+
+    [Theory]
+    [InlineData("NU1101", FailureKind.Restore)]
+    [InlineData("CS1002", FailureKind.Compiler)]
+    public void BuildErrorContext_GenericError_ProducesSingleClassifiedFailure(string code, FailureKind expectedKind)
+    {
+        var log = code == "NU1101"
+            ? """
+    ##[group]Run dotnet restore
+    dotnet restore
+    ##[endgroup]
+    /home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj : error NU1101: Unable to find package Yok. No packages exist [/home/runner/work/ci-agent-pilot/ci-agent-pilot/CiPilot.slnx]
+    ##[error]Process completed with exit code 1.
+    """
+            : """
+    ##[group]Run dotnet build --no-restore -c Release
+    dotnet build --no-restore -c Release
+    ##[endgroup]
+    ##[error]/home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/Calculator.cs(5,42): error CS1002: ; expected [/home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj]
+    Build FAILED.
+    """;
+
+        var context = LogParser.BuildErrorContext(FailedJob("build", "step"), Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(context);
+        var failure = Assert.Single(context!.Failures);
+        Assert.Equal(expectedKind, failure.Kind);
+        Assert.Contains(code, failure.Message);
+    }
+
+    [Fact]
+    public void BuildErrorContext_MultiJob_SingleElementList_MatchesSingleJobOverload()
+    {
+        var job = FailedJob("build-test", "Test");
+        var log = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [28 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+
+    Failed!  - Failed:     1, Passed:     1, Skipped:     0, Total:     2, Duration: 122 ms - CiPilot.Core.Tests.dll (net8.0)
+    """;
+
+        var single = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+        var viaList = LogParser.BuildErrorContext(new[]
+        {
+            new LogParser.JobLog(job, Array.Empty<Octokit.CheckRunAnnotation>(), log)
+        });
+
+        Assert.NotNull(single);
+        Assert.NotNull(viaList);
+        Assert.Equal(single!.RawStepLog, viaList!.RawStepLog);
+        Assert.Equal(single.JobName, viaList.JobName);
+        Assert.Equal(single.FailedStepName, viaList.FailedStepName);
+        Assert.Equal(single.AllFailuresLocated, viaList.AllFailuresLocated);
+        Assert.Equal(single.Failures, viaList.Failures);   // Failure record: değer eşitliği
+    }
+
+    [Fact]
+    public void BuildErrorContext_MergesFailuresAcrossMultipleFailedJobs()
+    {
+        var testJob = FailedJob("build-test", "Test");
+        var testLog = """
+    ##[group]Run dotnet test --no-build -c Release
+    dotnet test --no-build -c Release
+    ##[endgroup]
+      Failed CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum [28 ms]
+      Error Message:
+       Assert.Equal() Failure: Values differ
+      Stack Trace:
+         at CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum() in /home/runner/work/ci-agent-pilot/ci-agent-pilot/tests/CiPilot.Core.Tests/CalculatorTests.cs:line 12
+
+    Failed!  - Failed:     1, Passed:     1, Skipped:     0, Total:     2, Duration: 122 ms - CiPilot.Core.Tests.dll (net8.0)
+    """;
+
+        var restoreJob = FailedJob("restore-job", "Restore");
+        var restoreLog = """
+    ##[group]Run dotnet restore
+    dotnet restore
+    ##[endgroup]
+    /home/runner/work/ci-agent-pilot/ci-agent-pilot/src/CiPilot.Core/CiPilot.Core.csproj : error NU1101: Unable to find package Yok. No packages exist [/home/runner/work/ci-agent-pilot/ci-agent-pilot/CiPilot.slnx]
+    ##[error]Process completed with exit code 1.
+    """;
+
+        var context = LogParser.BuildErrorContext(new[]
+        {
+            new LogParser.JobLog(testJob, Array.Empty<Octokit.CheckRunAnnotation>(), testLog),
+            new LogParser.JobLog(restoreJob, Array.Empty<Octokit.CheckRunAnnotation>(), restoreLog)
+        });
+
+        Assert.NotNull(context);
+        Assert.Equal(2, context!.Failures.Count);
+
+        var testFailure = context.Failures.Single(f => f.Kind == FailureKind.Test);
+        Assert.Equal("build-test", testFailure.JobName);
+        Assert.Equal("tests/CiPilot.Core.Tests/CalculatorTests.cs", testFailure.FilePath);
+
+        var restoreFailure = context.Failures.Single(f => f.Kind == FailureKind.Restore);
+        Assert.Equal("restore-job", restoreFailure.JobName);
+        Assert.Contains("NU1101", restoreFailure.Message);
+
+        // Job/adım adları her iki job'ı da içermeli.
+        Assert.Contains("build-test", context.JobName);
+        Assert.Contains("restore-job", context.JobName);
+        Assert.Contains("Test", context.FailedStepName);
+        Assert.Contains("Restore", context.FailedStepName);
+
+        // Ham log job başlıklarıyla birleştirilmeli.
+        Assert.Contains("### build-test / Test", context.RawStepLog);
+        Assert.Contains("### restore-job / Restore", context.RawStepLog);
+
+        Assert.False(context.AllFailuresLocated);   // restore failure konumsuz
+    }
+
+    [Fact]
+    public void BuildErrorContext_MultiJob_ReturnsNull_WhenNoJobHasFailedStep()
+    {
+        var okStep = new Octokit.WorkflowJobStep(
+            name: "Build", status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Success,
+            number: 1, startedAt: DateTimeOffset.UtcNow, completedAt: DateTimeOffset.UtcNow);
+
+        var job = new Octokit.WorkflowJob(
+            id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Failure,
+            createdAt: DateTimeOffset.UtcNow, startedAt: DateTimeOffset.UtcNow, completedAt: DateTimeOffset.UtcNow,
+            name: "weird-job", steps: new List<Octokit.WorkflowJobStep> { okStep },
+            checkRunUrl: "", labels: new List<string>());
+
+        var context = LogParser.BuildErrorContext(new[]
+        {
+            new LogParser.JobLog(job, Array.Empty<Octokit.CheckRunAnnotation>(), "irrelevant log")
+        });
+
+        Assert.Null(context);
+    }
+
     [Fact]
     public void BuildErrorContext_FallsBackToGenericError_WhenTestFailureFormatDoesNotMatch()
     {
@@ -504,6 +747,6 @@ public class LogParserTests
 
         Assert.NotNull(context);
         Assert.NotNull(context!.RawStepLog);
-        Assert.Contains("NU1101", context.ErrorMessage);
+        Assert.Contains("NU1101", Assert.Single(context.Failures).Message);
     }
 }
