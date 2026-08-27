@@ -141,12 +141,39 @@ if (errorContext.FilePath is not null && errorContext.LineNumber is int line)
 // --- Adım 3: LLM analizi ---
 Console.WriteLine("Azure OpenAI'a istek atılıyor...");
 var llm = new LlmService(azureEndpoint!, azureKey!, azureDeployment!);
-var result = await llm.AnalyzeAsync(errorContext);
+
+AnalysisResult? result;
+try
+{
+    result = await llm.AnalyzeAsync(errorContext);
+}
+catch (Exception ex)
+{
+    // LLM katmanındaki HERHANGİ bir hata (ağ, deployment adı yanlış, rate limit,
+    // JSON schema uyuşmazlığı vb.) süreci burada durdurmamalı. ForSkipped burada
+    // uygun değil (o sadece token limiti aşımı için, int parametre alıyor) - bu
+    // yüzden AnalysisResult'ı elle, "low" confidence ile oluşturuyoruz ki
+    // ConfidenceBadge eşlemesi bozulmasın ve rapor akışı normal işlesin.
+    Console.Error.WriteLine($"HATA: LLM analizi başarısız oldu. Hata: {ex.Message}");
+    result = new AnalysisResult
+    {
+        Summary = "LLM analizi sırasında bir hata oluştu, otomatik analiz yapılamadı.",
+        RootCause = $"{ex.GetType().Name}: {ex.Message}",
+        SuggestedFix = "Lütfen logu manuel inceleyin. Sorun devam ederse Azure OpenAI bağlantısı/secret'ları kontrol edin.",
+        Confidence = "low"
+    };
+}
 
 if (result is null)
 {
     Console.WriteLine("HATA: LLM'den null döndü (deserialize başarısız olmuş olabilir).");
-    return;
+    result = new AnalysisResult
+    {
+        Summary = "LLM'den boş/geçersiz yanıt döndü, analiz atlandı.",
+        RootCause = "Deserialize işlemi başarısız oldu ya da LLM boş içerik döndürdü.",
+        SuggestedFix = "Logu manuel inceleyin.",
+        Confidence = "low"
+    };
 }
 
 Console.WriteLine("--- AnalysisResult ---");
