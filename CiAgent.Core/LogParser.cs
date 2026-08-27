@@ -199,7 +199,7 @@ public static class LogParser
         // gibi önekler path'e karışmasın.
         var compilerMatch = Regex.Match(
             stepBlock,
-            @"(?<path>[\w./-]+\.cs)\((?<line>\d+),\d+\)\s*:\s*error\s+(?<code>\w+\d*)\s*:\s*(?<msg>.+?)\s*(?:\[.*\])?\s*$",
+            @"(?:/home/runner/work/[^/]+/[^/]+/)?(?<path>[\w./-]+\.cs)\((?<line>\d+),\d+\)\s*:\s*error\s+(?<code>\w+\d*)\s*:\s*(?<msg>.+?)\s*(?:\[.*\])?\s*$",
             RegexOptions.Multiline);
 
         if (compilerMatch.Success)

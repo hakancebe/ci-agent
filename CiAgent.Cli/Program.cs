@@ -44,7 +44,7 @@ string Resolve(int index, string envName, string fallback)
 
 var owner = Resolve(0, "CI_AGENT_OWNER", "hakancebe");
 var repo = Resolve(1, "CI_AGENT_REPO", "ci-agent-pilot");
-var runIdRaw = Resolve(2, "CI_AGENT_RUN_ID", "32651264809");
+var runIdRaw = Resolve(2, "CI_AGENT_RUN_ID", "32977225843");
 
 if (!long.TryParse(runIdRaw, out var runId))
 {
@@ -92,8 +92,11 @@ Console.WriteLine("=== ErrorContext ===");
 Console.WriteLine($"Job: {errorContext.JobName}");
 Console.WriteLine($"Başarısız adım: {errorContext.FailedStepName}");
 Console.WriteLine($"Dosya: {errorContext.FilePath}, Satır: {errorContext.LineNumber}");
+Console.WriteLine($"AllFailuresLocated: {errorContext.AllFailuresLocated}");
+Console.WriteLine($"ErrorMessage: {errorContext.ErrorMessage}");
+Console.WriteLine($"CodeSnippet null mu: {errorContext.CodeSnippet is null}");
+Console.WriteLine($"CodeSnippet uzunluk: {errorContext.CodeSnippet?.Length ?? 0}");
 Console.WriteLine($"Annotation sayısı: {errorContext.FilteredAnnotations.Count}");
-Console.WriteLine();
 
 // --- "Koda bakma": FilePath+LineNumber ikisi de doluysa (compile/test hataları)
 // ilgili dosyanın ±30 satırlık kesitini çekip prompt'a ekliyoruz. Path+line yoksa
