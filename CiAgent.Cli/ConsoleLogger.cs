@@ -8,10 +8,8 @@ namespace CiAgent.Cli;
 /// öneki basıyor — GitHub Actions log'unda insan tarafından okunan bir çıktı için
 /// bu gürültü. Burada uyarı/hata stderr'e, gerisi stdout'a düz satır olarak gidiyor.
 /// </summary>
-public sealed class ConsoleLogger : ILogger<CiAgent.Core.CiAnalysisPipeline>
+public sealed class ConsoleLogger<T> : ILogger<T>
 {
-    public static ILogger<CiAgent.Core.CiAnalysisPipeline> Create() => new ConsoleLogger();
-
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
     public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
@@ -41,4 +39,9 @@ public sealed class ConsoleLogger : ILogger<CiAgent.Core.CiAnalysisPipeline>
         if (exception is not null)
             writer.WriteLine($"       {exception.GetType().Name}: {exception.Message}");
     }
+}
+
+public static class ConsoleLogger
+{
+    public static ILogger<T> Create<T>() => new ConsoleLogger<T>();
 }

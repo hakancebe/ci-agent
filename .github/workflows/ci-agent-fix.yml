@@ -1,0 +1,111 @@
+# CiAgent /fix — PR'a "/fix" yorumu yazıldığında hatalı kodu otomatik düzeltir.
+#
+# ÖNEMLİ: Bu dosya, düzeltilecek kodun BULUNDUĞU repo'ya kurulmalıdır
+# (ci-agent.yml ile aynı yere). Agent'ın kendi kaynak kodu ayrı bir dizine
+# çekiliyor ki hedef repo'nun çalışma kopyasıyla karışmasın.
+
+name: CI Agent Fix
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read          # başarısız run'ı bulma + job log indirme
+  checks: read           # annotation'lar
+  contents: write        # düzeltmeyi PR dalına push etme
+  issues: write          # PR yorumu ve 👀 tepkisi
+  pull-requests: write   # PR bilgisini okuma
+
+# Aynı PR'da iki /fix aynı anda çalışırsa ikisi de aynı dala push etmeye
+# çalışır ve biri çakışır. Sıraya sokuyoruz; devam edeni iptal ETMİYORUZ
+# çünkü yarıda kesilen bir düzeltme dosyaları yarım bırakabilir.
+concurrency:
+  group: ci-agent-fix-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    # Üç ön koşul, en ucuzdan pahalıya:
+    #  1) Yorum bir PR'da mı? (issue_comment hem issue hem PR için tetikleniyor)
+    #  2) Yorum /fix ile mi BAŞLIYOR? (cümle içinde geçmesi yetmez)
+    #  3) Yazan kişinin yazma yetkisi var mı?
+    # Üçü de burada elenirse runner hiç ayağa kalkmaz. Agent bu kontrolleri
+    # kendi içinde TEKRAR yapıyor — burası sadece boşa iş yapmamak için.
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/fix') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: PR bilgisini al
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            // Fork'tan gelen PR'lara push edilemez (GitHub güvenlik kısıtı).
+            // Bunu erken tespit edip anlamlı bir mesaj bırakıyoruz.
+            core.setOutput('head_ref', pr.data.head.ref);
+            core.setOutput('is_fork', String(pr.data.head.repo.full_name !== pr.data.base.repo.full_name));
+
+      - name: Fork PR'ları desteklenmiyor
+        if: steps.pr.outputs.is_fork == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '## ⚠️ CiAgent — /fix\n\nBu PR bir fork\'tan geldiği için otomatik düzeltme yapılamıyor: '
+                  + 'GitHub Actions güvenlik nedeniyle fork dallarına push izni vermiyor.\n\n'
+                  + 'Analiz yorumundaki önerilen çözümü elle uygulayabilirsiniz.',
+            });
+
+      - name: Düzeltilecek kodu çek (PR dalı)
+        if: steps.pr.outputs.is_fork != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          # Agent commit atıp push edecek; varsayılan token yeterli.
+          path: workspace
+
+      - name: Agent kaynak kodunu çek
+        if: steps.pr.outputs.is_fork != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: hakancebe/ci-agent
+          ref: main
+          path: agent
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.pr.outputs.is_fork != 'true'
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: CiAgent /fix çalıştır
+        if: steps.pr.outputs.is_fork != 'true'
+        working-directory: agent
+        env:
+          CI_AGENT_MODE: fix
+          GITHUB_TOKEN: ${{ secrets.CI_AGENT_PAT || secrets.GITHUB_TOKEN }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+          CI_AGENT_OWNER: ${{ github.repository_owner }}
+          CI_AGENT_REPO: ${{ github.event.repository.name }}
+          CI_AGENT_PR_NUMBER: ${{ github.event.issue.number }}
+          CI_AGENT_COMMENT_ID: ${{ github.event.comment.id }}
+          # Yorum gövdesi env var olarak veriliyor, komut satırına GÖMÜLMÜYOR:
+          # doğrudan interpolasyon, yorum yazan herkese runner'da komut
+          # çalıştırma imkânı verirdi (script injection).
+          CI_AGENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          CI_AGENT_COMMENT_AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
+          CI_AGENT_WORKSPACE: ${{ github.workspace }}/workspace
+        run: dotnet run --project CiAgent.Cli/CiAgent.Cli.csproj -c Release

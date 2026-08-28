@@ -261,6 +261,167 @@ public class LlmService
         return (null, PromptBudget.Full);
     }
 
+    // ---------------------------------------------------------------------
+    // /fix: kod düzeltme önerisi üretme
+    // ---------------------------------------------------------------------
+
+    private const string FixSystemPrompt = """
+        Sen bir CI/CD hata düzeltme asistanısın. Sana başarısız bir CI run'ının
+        analizi ve ilgili kaynak dosyaların İÇERİĞİ verilecek. Görevin hatayı
+        gideren en küçük kod değişikliğini önermek.
+
+        Değişiklikleri "bul ve değiştir" biçiminde ver:
+        - oldText: dosyada ŞU AN BİREBİR var olan metin. Kopyaladığın metin
+          dosyadaki hâliyle harfi harfine aynı olmalı (girinti dahil).
+        - oldText o dosyada YALNIZCA BİR KEZ geçecek kadar uzun olsun. Kısa ve
+          birden çok yerde geçen bir metin verirsen değişiklik reddedilir; şüphedeysen
+          çevresindeki birkaç satırı da ekleyerek benzersiz hale getir.
+        - newText: yerine gelecek metin.
+
+        Kesin kurallar:
+        - EN KÜÇÜK değişikliği yap. Alakasız yeniden düzenleme, biçimlendirme,
+          yorum ekleme YOK.
+        - Testleri DEĞİŞTİRME, silme, zayıflatma. Test dosyalarına dokunma.
+          Görevin testi geçirmek değil, testin yakaladığı hatayı düzeltmek.
+        - Sadece verilen dosya içeriklerine dayan. Görmediğin bir dosyayı düzenleme.
+        - Hatayı verilen bilgiyle güvenle düzeltemiyorsan edits listesini BOŞ bırak
+          ve summary'de nedenini yaz. Uydurma bir değişiklik yapmaktan iyidir.
+        - Türkçe cevap ver (kod hariç).
+        """;
+
+    private const string FixJsonSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "summary": { "type": "string" },
+            "edits": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file":    { "type": "string" },
+                  "oldText": { "type": "string" },
+                  "newText": { "type": "string" },
+                  "reason":  { "type": "string" }
+                },
+                "required": ["file", "oldText", "newText", "reason"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["summary", "edits"],
+          "additionalProperties": false
+        }
+        """;
+
+    /// <summary>
+    /// Analiz + dosya içerikleri -> somut kod değişikliği önerisi.
+    /// </summary>
+    /// <param name="files">Yol -> dosya içeriği. Modele yalnızca bunlar gösterilir.</param>
+    /// <param name="previousAttempt">
+    /// Önceki deneme başarısız olduysa, o denemede ne yapıldığı ve doğrulamanın ne
+    /// hata verdiği. Modelin aynı yanlışı tekrarlamaması için prompt'a ekleniyor.
+    /// </param>
+    public async Task<FixProposal?> ProposeFixAsync(
+        ErrorContext context,
+        AnalysisResult analysis,
+        IReadOnlyDictionary<string, string> files,
+        string? previousAttempt = null)
+    {
+        var prompt = BuildFixPrompt(context, analysis, files, previousAttempt);
+
+        // Analiz tarafındaki kademeli düşüş burada yok: düzeltme için dosya
+        // içeriği ZORUNLU, kırpılırsa model olmayan bir metni "birebir" sanıp
+        // uydurur. Sığmıyorsa düzeltmeyi hiç denememek doğru.
+        if (prompt.Length > MaxPromptChars)
+            return null;
+
+        var options = new ChatCompletionOptions
+        {
+            Temperature = 0.1f,   // kod üretiminde analizden de az serbestlik
+            ResponseFormat = ChatResponseFormat.CreateJsonSchemaFormat(
+                jsonSchemaFormatName: "fix_proposal",
+                jsonSchema: BinaryData.FromString(FixJsonSchema),
+                jsonSchemaIsStrict: true)
+        };
+
+        List<ChatMessage> messages =
+        [
+            new SystemChatMessage(FixSystemPrompt),
+            new UserChatMessage(prompt)
+        ];
+
+        var json = await CompleteWithRetryAsync(messages, options);
+        return JsonSerializer.Deserialize<FixProposal>(json);
+    }
+
+    internal static string BuildFixPrompt(
+        ErrorContext context,
+        AnalysisResult analysis,
+        IReadOnlyDictionary<string, string> files,
+        string? previousAttempt)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine($"Başarısız job: {context.JobName} / {context.FailedStepName}");
+        sb.AppendLine();
+
+        sb.AppendLine("Analiz özeti:");
+        sb.AppendLine(analysis.Summary);
+        sb.AppendLine();
+
+        for (var i = 0; i < analysis.Analyses.Count; i++)
+        {
+            var a = analysis.Analyses[i];
+            sb.AppendLine($"{i + 1}) {a.Title}");
+            sb.AppendLine($"   Kök neden: {a.RootCause}");
+            sb.AppendLine($"   Önerilen çözüm: {a.SuggestedFix}");
+            if (a.AffectedFile is not null)
+                sb.AppendLine($"   Konum: {a.AffectedFile}{(a.AffectedLine is int l ? $":{l}" : "")}");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("Hata mesajları:");
+        foreach (var g in FailureGrouper.Group(context.Failures))
+        {
+            var f = g.Representative;
+            var loc = f.FilePath is not null
+                ? $" ({f.FilePath}{(f.LineNumber is int ln ? $":{ln}" : "")})"
+                : "";
+            sb.AppendLine($"- {f.Name ?? f.Kind.ToString()}{loc}: {Masker.Mask(f.Message)}");
+        }
+        sb.AppendLine();
+
+        // Önceki deneme neden tutmadı - modelin aynı duvara tekrar toslamaması için.
+        if (!string.IsNullOrWhiteSpace(previousAttempt))
+        {
+            sb.AppendLine("ÖNCEKİ DENEME BAŞARISIZ OLDU:");
+            sb.AppendLine(previousAttempt);
+            sb.AppendLine("Bu sefer farklı bir yaklaşım dene.");
+            sb.AppendLine();
+        }
+
+        // Dosya içerikleri Masker'dan geçirilmiyor: bu kaynak kod, log değil.
+        // Maskeleme kuralları koddaki "password" gibi değişken adlarını bozar ve
+        // model bozulmuş metni "birebir" sanıp eşleşmeyen oldText üretirdi.
+        // İçerik bilinçli olarak SATIR NUMARASIZ veriliyor: oldText dosyadaki
+        // metinle birebir eşleşmek zorunda ve numaralı gösterim modelin "42: "
+        // önekini de kopyalamasına yol açıyor - eşleşme tutmuyor. Hatanın hangi
+        // satırda olduğu zaten yukarıdaki analiz bölümünde yazıyor.
+        sb.AppendLine("Dosya içerikleri (oldText bu metinle BİREBİR eşleşmeli):");
+
+        foreach (var (path, content) in files)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"--- {path} ---");
+            sb.AppendLine("```");
+            sb.AppendLine(content.TrimEnd());
+            sb.AppendLine("```");
+        }
+
+        return sb.ToString();
+    }
+
     // internal (private değil): AnalyzeAsync'in ölçtüğü uzunluk testlerden
     // doğrudan doğrulanabilsin diye (bkz. AssemblyInfo.cs -> InternalsVisibleTo).
     // Bütçesiz overload = hiçbir şey feda edilmemiş tam prompt.
