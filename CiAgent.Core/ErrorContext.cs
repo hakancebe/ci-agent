@@ -2,24 +2,34 @@ namespace CiAgent.Core;
 
 public class ErrorContext
 {
+    /// <summary>Başarısız job(lar)ın adı; birden fazlaysa virgülle birleştirilmiş.</summary>
     public required string JobName { get; init; }
+
+    /// <summary>Başarısız adım(lar)ın adı; birden fazlaysa virgülle birleştirilmiş.</summary>
     public required string FailedStepName { get; init; }
+
+    /// <summary>
+    /// Başarısız adımın ham log kesiti. Yalnızca en az bir failure'ın konumu
+    /// bilinmiyorsa prompt'a giriyor (bkz. <see cref="AllFailuresLocated"/>);
+    /// prompt limitine sığmazsa ilk feda edilen katman bu.
+    /// </summary>
     public string? RawStepLog { get; set; }
+
     public List<string> FilteredAnnotations { get; set; } = new();
-    public string? FilePath { get; set; }
-    public int? LineNumber { get; set; }
-    public string? ErrorMessage { get; set; }
 
-    // FilePath+LineNumber ikisi de doluysa (compile/test hataları) GitHub Contents
-    // API'den çekilen dosyanın ±30 satırlık kesiti. Path+line yoksa (restore/deploy
-    // hataları) bu adım hiç tetiklenmez, CodeSnippet null kalır. Program.cs LLM
-    // çağrısından önce doldurur; LlmService.BuildPrompt bunu prompt'a ekler.
-    public string? CodeSnippet { get; set; }
+    /// <summary>
+    /// Bu run'da tespit edilen TÜM hatalar — tek kaynak. Dosya:satır, hata mesajı,
+    /// kod kesiti ve ham kanıt her failure'ın kendi üzerinde; tekrarları
+    /// <see cref="FailureGrouper"/> prompt/rapor üretiminde topluyor.
+    /// </summary>
+    public List<Failure> Failures { get; set; } = new();
 
-    // Tek hatada FilePath+LineNumber doluysa, ya da çoklu test hatasında HER
-    // failure'ın kendi konumu (dosya:satır) bulunmuşsa true. LlmService bunu
-    // RawStepLog'u prompt'a ekleyip eklememeye karar vermek için kullanıyor:
-    // konum zaten kesinse (build-cs1002'nin aksine) ham log ekstra bir şey
-    // katmıyor, sadece token israfı oluyor.
-    public bool AllFailuresLocated { get; set; }
+    /// <summary>
+    /// Her failure'ın kendi dosya:satır konumu bulunmuşsa true. LlmService bunu
+    /// RawStepLog'u prompt'a ekleyip eklememeye karar vermek için kullanıyor:
+    /// konum zaten kesinse ham log ekstra bir şey katmıyor, sadece token israfı
+    /// oluyor. Failures'tan türetiliyor - ayrıca set edilmiyor ki listeyle
+    /// tutarsız kalması mümkün olmasın.
+    /// </summary>
+    public bool AllFailuresLocated => Failures.Count > 0 && Failures.All(f => f.IsLocated);
 }

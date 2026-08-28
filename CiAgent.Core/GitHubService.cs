@@ -4,7 +4,7 @@ using Octokit;
 
 namespace CiAgent.Core;
 
-public class GitHubService
+public class GitHubService : IGitHubGateway
 {
   private readonly IGitHubClient _client;
   private readonly HttpClient _http;

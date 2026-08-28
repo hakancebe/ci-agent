@@ -6,10 +6,22 @@ namespace CiAgent.Core;
 
 public static class LogParser
 {
+    /// <summary>Tek bir başarısız job'ın analiz için gereken üç girdisi.</summary>
+    public sealed record JobLog(
+        WorkflowJob Job,
+        IReadOnlyList<CheckRunAnnotation> Annotations,
+        string RawLog);
+
     public static WorkflowJobStep? FindFailedStep(WorkflowJob job)
     {
         // conclusion da null olabildiği için "Conclusion?" yapısı kullanıldı
         return job.Steps?.FirstOrDefault(s => s.Conclusion?.StringValue == "failure");
+    }
+
+    public static List<WorkflowJobStep> FindFailedSteps(WorkflowJob job)
+    {
+        return job.Steps?.Where(s => s.Conclusion?.StringValue == "failure").ToList()
+               ?? new List<WorkflowJobStep>();
     }
     // IReadOnlyList<CheckRunAnnotation> liste sadece okuanbilir değiştirilemez
     public static List<CheckRunAnnotation> FilterAnnotations(IReadOnlyList<CheckRunAnnotation> annotations)
@@ -139,8 +151,14 @@ public static class LogParser
         RegexOptions.Singleline,
         matchTimeout: TimeSpan.FromSeconds(2));
 
+    // GitHub Actions runner'ında stack trace path'i "/home/runner/work/{repo}/{repo}/"
+    // ile başlar; bu sabit öneki atıp geriye repo kökünden relative path bırakıyoruz
+    // (GetFileContentAsync Contents API'yi bu formatta bekliyor). Önek eşleşmezse
+    // (lokal/farklı CI) path olduğu gibi korunur — path karakter sınıfı '/' içerdiği
+    // için mutlak yol da tek parça yakalanır. ExtractGenericError'ın derleyici/restore
+    // dallarıyla aynı davranış.
     private static readonly Regex StackTraceFileLineRegex = new(
-        @"in\s+(?:/[\w./-]+/)?([\w.]+\.cs):line\s+(\d+)",
+        @"in\s+(?:/home/runner/work/[^/]+/[^/]+/)?(?<path>[\w./-]+\.cs):line\s+(?<line>\d+)",
         RegexOptions.None,
         matchTimeout: TimeSpan.FromSeconds(2));
 
@@ -158,8 +176,8 @@ public static class LogParser
             var stackMatch = StackTraceFileLineRegex.Match(m.Groups["stack"].Value);
             failures.Add(new NamedTestFailure(
                 m.Groups["name"].Value,
-                stackMatch.Success ? stackMatch.Groups[1].Value : null,
-                stackMatch.Success ? int.Parse(stackMatch.Groups[2].Value) : null,
+                stackMatch.Success ? stackMatch.Groups["path"].Value : null,
+                stackMatch.Success ? int.Parse(stackMatch.Groups["line"].Value) : null,
                 m.Groups["msg"].Value.Trim(),
                 m.Value.TrimEnd()));
         }
@@ -227,32 +245,38 @@ public static class LogParser
         var stepBlocks = ExtractStepBlocks(rawLog);
 
         string? matchingBlock = null;
-        string? filePath = null;
-        int? lineNumber = null;
-        string? errorMessage = null;
-        var allFailuresLocated = false;
+        var failureList = new List<Failure>();
 
         foreach (var block in stepBlocks)
         {
             var failures = ExtractNamedTestFailures(block);
             if (failures.Count > 0)
             {
-                (filePath, lineNumber, errorMessage) = CombineTestFailures(failures);
-                // Tek tek her failure'ın kendi dosya:satır'ı bulunmuş mu? (üstteki
-                // filePath/lineNumber sadece ilk konumu bilinen failure'a ait.)
-                allFailuresLocated = failures.All(f => f.FilePath != null && f.LineNumber != null);
+                // Her test kendi konumu ve (konumsuzsa) ham kanıtıyla ayrı bir Failure.
+                foreach (var f in failures)
+                    failureList.Add(new Failure
+                    {
+                        Kind = FailureKind.Test,
+                        Name = f.Name,
+                        JobName = job.Name,
+                        StepName = failedStep.Name,
+                        FilePath = f.FilePath,
+                        LineNumber = f.LineNumber,
+                        Message = f.Message,
+                        RawEvidence = (f.FilePath != null && f.LineNumber != null) ? null : f.RawBlock
+                    });
 
                 // Hepsi konumluysa RawStepLog zaten LlmService'e hiç gönderilmeyecek
-                // (bkz. AllFailuresLocated), içeriği önemsiz - eski davranış yeterli.
+                // (bkz. ErrorContext.AllFailuresLocated), içeriği önemsiz.
                 // En az biri konumsuzsa blok bazlı akıllı seçim uygulanıyor.
-                matchingBlock = allFailuresLocated
+                matchingBlock = failures.All(f => f.FilePath != null && f.LineNumber != null)
                     ? TrimToTestSummary(block)
                     : BuildFilteredTestLog(block, failures);
                 break;
             }
         }
 
-        if (errorMessage is null)
+        if (failureList.Count == 0)
         {
             foreach (var block in stepBlocks)
             {
@@ -260,10 +284,16 @@ public static class LogParser
                 if (msg != null)
                 {
                     matchingBlock = block;
-                    filePath = fp;
-                    lineNumber = ln;
-                    errorMessage = msg;
-                    allFailuresLocated = fp != null && ln != null;
+                    failureList.Add(new Failure
+                    {
+                        Kind = ClassifyGenericError(msg),
+                        JobName = job.Name,
+                        StepName = failedStep.Name,
+                        FilePath = fp,
+                        LineNumber = ln,
+                        Message = msg,
+                        RawEvidence = (fp != null && ln != null) ? null : block
+                    });
                     break;
                 }
             }
@@ -284,40 +314,51 @@ public static class LogParser
             FailedStepName = failedStep.Name,
             RawStepLog = matchingBlock,
             FilteredAnnotations = filteredAnnotations,
-            FilePath = filePath,
-            LineNumber = lineNumber,
-            ErrorMessage = errorMessage,
-            AllFailuresLocated = allFailuresLocated
+            Failures = failureList
         };
     }
 
-    // Aynı adımda birden fazla test fail olduğunda hiçbirini gizlemeden hepsini
-    // tek bir ErrorMessage'da toplar. Üst seviye FilePath/LineNumber, konumu
-    // bilinen ilk test'ten alınır; ama her testin kendi dosya:satır bilgisi de
-    // mesaj içinde ayrıca yer alır.
-    private static (string? FilePath, int? LineNumber, string ErrorMessage) CombineTestFailures(
-        List<NamedTestFailure> failures)
+    /// <summary>
+    /// Bir run'daki BİRDEN FAZLA başarısız job'ı tek ErrorContext'te birleştirir.
+    /// Tek job verilirse çıktı, tekil BuildErrorContext ile bire bir aynıdır
+    /// (aynı overload'a delege ediyor). Çoklu job'da her failure kendi JobName/
+    /// StepName'ini taşımaya devam eder; ham log job başlıklarıyla birleştirilir.
+    /// </summary>
+    public static ErrorContext? BuildErrorContext(IReadOnlyList<JobLog> jobLogs)
     {
-        if (failures.Count == 1)
+        var contexts = jobLogs
+            .Select(j => BuildErrorContext(j.Job, j.Annotations, j.RawLog))
+            .Where(c => c is not null)
+            .Select(c => c!)
+            .ToList();
+
+        if (contexts.Count == 0)
+            return null;
+        if (contexts.Count == 1)
+            return contexts[0];
+
+        var rawParts = contexts
+            .Where(c => !string.IsNullOrWhiteSpace(c.RawStepLog))
+            .Select(c => $"### {c.JobName} / {c.FailedStepName}\n{c.RawStepLog}")
+            .ToList();
+
+        return new ErrorContext
         {
-            var only = failures[0];
-            return (only.FilePath, only.LineNumber, only.Message);
-        }
+            JobName = string.Join(", ", contexts.Select(c => c.JobName).Distinct()),
+            FailedStepName = string.Join(", ", contexts.Select(c => c.FailedStepName).Distinct()),
+            RawStepLog = rawParts.Count > 0 ? string.Join("\n\n", rawParts) : null,
+            FilteredAnnotations = contexts.SelectMany(c => c.FilteredAnnotations).Distinct().ToList(),
+            Failures = contexts.SelectMany(c => c.Failures).ToList()
+        };
+    }
 
-        var withLocation = failures.FirstOrDefault(f => f.FilePath != null);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"{failures.Count} test başarısız oldu:");
-        for (var i = 0; i < failures.Count; i++)
-        {
-            var f = failures[i];
-            var location = f.FilePath != null ? $" ({f.FilePath}:{f.LineNumber})" : "";
-            sb.AppendLine();
-            sb.AppendLine($"{i + 1}) {f.Name}{location}");
-            sb.AppendLine($"   {f.Message}");
-        }
-
-        return (withLocation?.FilePath, withLocation?.LineNumber, sb.ToString().TrimEnd());
+    // ExtractGenericError mesajı "CODE: ..." önekiyle döndürür (NU1101, CS1002, ...).
+    // Fallback (##[error]) dalında önek yoktur -> Generic.
+    private static FailureKind ClassifyGenericError(string message)
+    {
+        if (Regex.IsMatch(message, @"^NU\d")) return FailureKind.Restore;
+        if (Regex.IsMatch(message, @"^(CS|NETSDK|MSB)\d")) return FailureKind.Compiler;
+        return FailureKind.Generic;
     }
 
     // Kör char-kesme yerine blok bazlı akıllı seçim: konumu (dosya:satır)

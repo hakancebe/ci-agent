@@ -1,9 +1,51 @@
+using CiAgent.Cli;
 using CiAgent.Core;
 using Microsoft.Extensions.Configuration;
 
-// Yapılandırma zincirini oluştur: 
-// 1. Önce Environment Variable'ları bakar
-// 2. Ardından User Secrets bakar (yerelde varsa üzerine yazar)
+// Bu dosyanın tek işi: yapılandırmayı bağlamak, hedefi çözmek ve pipeline'ın
+// sonucunu exit code'a çevirmek. Analiz akışının kendisi CiAnalysisPipeline'da
+// (CiAgent.Core) — orada test edilebiliyor.
+
+// --- Bayraklar ve konumsal argümanlar ayrıştırılıyor ---
+// Bayraklar konumsal argümanlardan ayrılmalı, yoksa `dotnet run -- --dry-run` çağrısında
+// "--dry-run" owner sanılır. Bilinmeyen bayrakta HATA veriyoruz: "--dryrun" gibi bir
+// yazım hatası sessizce GERÇEK bir çalıştırmaya (ve PR'a yorum atmaya) dönüşmemeli.
+var knownFlags = new[] { "--dry-run", "--help", "-h" };
+var flags = args.Where(a => a.StartsWith('-')).ToList();
+var positional = args.Where(a => !a.StartsWith('-')).ToArray();
+
+var unknownFlags = flags.Where(f => !knownFlags.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
+if (unknownFlags.Count > 0)
+{
+    Console.Error.WriteLine($"HATA: Bilinmeyen bayrak: {string.Join(", ", unknownFlags)}");
+    Console.Error.WriteLine($"Kullanılabilir bayraklar: {string.Join(", ", knownFlags)}");
+    return 1;
+}
+
+if (flags.Any(f => f is "--help" or "-h"))
+{
+    Console.WriteLine("""
+        Kullanım: ci-agent [owner] [repo] [runId] [--dry-run]
+
+          owner/repo/runId  Hedef. Verilmezse CI_AGENT_OWNER / CI_AGENT_REPO /
+                            CI_AGENT_RUN_ID env var'larına, lokalde varsayılanlara düşer.
+                            CI'da (GITHUB_ACTIONS=true) üçü de zorunludur.
+
+          --dry-run         Analizi yapar ama GitHub'a HİÇBİR ŞEY yazmaz; yazılacak olan
+                            yorumu konsola basar. Azure OpenAI çağrısı yine de yapılır.
+                            CI_AGENT_DRY_RUN=true ile de açılabilir.
+        """);
+    return 0;
+}
+
+// Bayrak ya da env var — hangisi verilirse dry-run açılır.
+var dryRun = flags.Contains("--dry-run", StringComparer.OrdinalIgnoreCase)
+    || string.Equals(Environment.GetEnvironmentVariable("CI_AGENT_DRY_RUN"), "true",
+                     StringComparison.OrdinalIgnoreCase);
+
+// Yapılandırma zinciri:
+// 1. Önce Environment Variable'lara bakar
+// 2. Ardından User Secrets'a bakar (yerelde varsa üzerine yazar)
 var config = new ConfigurationBuilder()
     .AddEnvironmentVariables()
     .AddUserSecrets<Program>()
@@ -23,175 +65,87 @@ if (string.IsNullOrWhiteSpace(azureDeployment)) missing.Add("AZURE_OPENAI_DEPLOY
 
 if (missing.Count > 0)
 {
-    Console.WriteLine($"HATA: Şu env var'lar eksik: {string.Join(", ", missing)}");
-    Console.WriteLine("GITHUB_TOKEN GitHub API çağrıları içindir, AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_KEY / AZURE_OPENAI_DEPLOYMENT ise Azure OpenAI için ayrı secret'lardır.");
-    Environment.Exit(1);
-    return;
+    Console.Error.WriteLine($"HATA: Şu env var'lar eksik: {string.Join(", ", missing)}");
+    Console.Error.WriteLine(
+        "GITHUB_TOKEN GitHub API çağrıları içindir, AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_KEY / "
+        + "AZURE_OPENAI_DEPLOYMENT ise Azure OpenAI için ayrı secret'lardır.");
+    return 1;
 }
 
 // --- Hedef owner/repo/run ID ---
 // Öncelik sırası: komut satırı argümanı > env var > varsayılan.
-// Lokal test için `dotnet run -- owner repo runId` aynen çalışmaya devam eder;
-// CI'da workflow bu değerleri workflow_run payload'ından env var olarak besler.
+// Lokal test için `dotnet run -- owner repo runId` aynen çalışır; CI'da workflow
+// bu değerleri workflow_run payload'ından env var olarak besler.
+//
+// CI'da (GITHUB_ACTIONS=true) varsayılana düşmek TEHLİKELİ: hedef belirtilmemişse
+// agent sessizce BAŞKA bir repoyu/run'ı analiz edip yanlış PR'a yorum atabilir.
+// Bu yüzden CI'da üçü de zorunlu; varsayılanlar yalnızca lokal deneme kolaylığı.
+var isCi = string.Equals(
+    Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase);
+
+var missingTargets = new List<string>();
+var usedFallback = false;
+
 string Resolve(int index, string envName, string fallback)
 {
-    if (args.Length > index && !string.IsNullOrWhiteSpace(args[index]))
-        return args[index];
+    if (positional.Length > index && !string.IsNullOrWhiteSpace(positional[index]))
+        return positional[index];
 
     var fromEnv = Environment.GetEnvironmentVariable(envName);
-    return string.IsNullOrWhiteSpace(fromEnv) ? fallback : fromEnv;
+    if (!string.IsNullOrWhiteSpace(fromEnv))
+        return fromEnv;
+
+    if (isCi)
+    {
+        missingTargets.Add(envName);
+        return "";
+    }
+
+    usedFallback = true;
+    return fallback;
 }
 
 var owner = Resolve(0, "CI_AGENT_OWNER", "hakancebe");
 var repo = Resolve(1, "CI_AGENT_REPO", "ci-agent-pilot");
 var runIdRaw = Resolve(2, "CI_AGENT_RUN_ID", "32977225843");
 
-if (!long.TryParse(runIdRaw, out var runId))
+// Lokalde hedef verilmediyse varsayılanlara düşüyoruz — ama User Secrets dolu olduğu
+// için bu SESSİZCE gerçek bir çalıştırmaya, yani başka bir repoya yorum atmaya dönüşebilir.
+// Bu yüzden ne olacağını açıkça yazıyoruz ve --dry-run'ı hatırlatıyoruz.
+if (usedFallback && !dryRun)
 {
-    // CI'da sessizce eski bir run'ı analiz etmektense hemen patlamak daha doğru.
-    Console.WriteLine($"HATA: Geçersiz run ID: '{runIdRaw}'. Sayısal bir değer bekleniyor.");
-    Environment.Exit(1);
-    return;
-}
-
-Console.WriteLine($"Hedef: {owner}/{repo} run {runId}");
-
-// --- Adım 1-2: Octokit ile job/annotation/log çekme, ErrorContext üretme ---
-var github = new GitHubService(githubToken!);
-
-var jobs = await github.GetJobsAsync(owner, repo, runId);
-
-Octokit.WorkflowJob? failedJob = null;
-foreach (var job in jobs)
-{
-    if (job.Conclusion?.StringValue == "failure")
-    {
-        failedJob = job;
-        break;
-    }
-}
-
-if (failedJob is null)
-{
-    Console.WriteLine($"HATA: {owner}/{repo} run {runId} için job bulunamadı.");
-    return;
-}
-
-var annotations = await github.GetAnnotationsAsync(owner, repo, failedJob.Id);
-var log = await github.DownloadJobLogAsync(owner, repo, failedJob.Id);
-
-var errorContext = LogParser.BuildErrorContext(failedJob, annotations, log);
-
-if (errorContext is null)
-{
-    Console.WriteLine($"HATA: '{failedJob.Name}' job'ında başarısız bir step bulunamadı, ErrorContext üretilemedi.");
-    return;
-}
-
-Console.WriteLine("=== ErrorContext ===");
-Console.WriteLine($"Job: {errorContext.JobName}");
-Console.WriteLine($"Başarısız adım: {errorContext.FailedStepName}");
-Console.WriteLine($"Dosya: {errorContext.FilePath}, Satır: {errorContext.LineNumber}");
-Console.WriteLine($"AllFailuresLocated: {errorContext.AllFailuresLocated}");
-Console.WriteLine($"ErrorMessage: {errorContext.ErrorMessage}");
-Console.WriteLine($"CodeSnippet null mu: {errorContext.CodeSnippet is null}");
-Console.WriteLine($"CodeSnippet uzunluk: {errorContext.CodeSnippet?.Length ?? 0}");
-Console.WriteLine($"Annotation sayısı: {errorContext.FilteredAnnotations.Count}");
-
-// --- "Koda bakma": FilePath+LineNumber ikisi de doluysa (compile/test hataları)
-// ilgili dosyanın ±30 satırlık kesitini çekip prompt'a ekliyoruz. Path+line yoksa
-// (restore/deploy hataları) bu adım tamamen atlanıyor.
-if (errorContext.FilePath is not null && errorContext.LineNumber is int line)
-{
-    Console.WriteLine("İlgili kod dosyası çekiliyor...");
-    try
-    {
-        var fileContent = await github.GetFileContentAsync(
-            owner, repo, errorContext.FilePath, failedJob.HeadSha);
-
-        if (fileContent is not null)
-        {
-            errorContext.CodeSnippet = CodeSnippetExtractor.ExtractSnippet(fileContent, line);
-        }
-        else
-        {
-            Console.WriteLine($"Uyarı: '{errorContext.FilePath}' dosyası bulunamadı, kod kesiti olmadan devam ediliyor.");
-        }
-    }
-    catch (Exception ex)
-    {
-        // Kod çekme başarısız olsa bile agent LLM analizine kod olmadan devam etmeli
-        Console.Error.WriteLine($"Kod çekilirken hata: {ex.Message}, kod kesiti olmadan devam ediliyor.");
-    }
-
-    if (errorContext.CodeSnippet is null)
-    {
-        Console.WriteLine("CodeSnippet: boş kaldı.");
-    }
-    else
-    {
-        Console.WriteLine($"CodeSnippet: dolduruldu ({errorContext.CodeSnippet.Split('\n').Length} satır):");
-        Console.WriteLine("--- CodeSnippet başlangıcı ---");
-        Console.WriteLine(errorContext.CodeSnippet);
-        Console.WriteLine("--- CodeSnippet sonu ---");
-    }
+    Console.WriteLine();
+    Console.WriteLine($"!!! DİKKAT: Hedef verilmedi, varsayılan kullanılıyor: {owner}/{repo} run {runIdRaw}");
+    Console.WriteLine("!!! Bu GERÇEK bir çalıştırma: analiz sonucu o repoya yorum olarak yazılacak.");
+    Console.WriteLine("!!! Sadece denemek istiyorsanız --dry-run ekleyin.");
     Console.WriteLine();
 }
 
-// --- Adım 3: LLM analizi ---
-Console.WriteLine("Azure OpenAI'a istek atılıyor...");
+if (missingTargets.Count > 0)
+{
+    Console.Error.WriteLine(
+        $"HATA: CI ortamında şu değerler zorunlu ama verilmedi: {string.Join(", ", missingTargets)}.");
+    Console.Error.WriteLine("Workflow bunları workflow_run payload'ından env var olarak beslemeli.");
+    return 1;
+}
+
+if (!long.TryParse(runIdRaw, out var runId))
+{
+    // CI'da sessizce eski bir run'ı analiz etmektense hemen patlamak daha doğru.
+    Console.Error.WriteLine($"HATA: Geçersiz run ID: '{runIdRaw}'. Sayısal bir değer bekleniyor.");
+    return 1;
+}
+
+// --- Bağımlılıkları kur ve çalıştır ---
+var github = new GitHubService(githubToken!);
 var llm = new LlmService(azureEndpoint!, azureKey!, azureDeployment!);
+var report = new ReportService(github.Client);
 
-AnalysisResult? result;
-try
-{
-    result = await llm.AnalyzeAsync(errorContext);
-}
-catch (Exception ex)
-{
-    // LLM katmanındaki HERHANGİ bir hata (ağ, deployment adı yanlış, rate limit,
-    // JSON schema uyuşmazlığı vb.) süreci burada durdurmamalı. ForSkipped burada
-    // uygun değil (o sadece token limiti aşımı için, int parametre alıyor) - bu
-    // yüzden AnalysisResult'ı elle, "low" confidence ile oluşturuyoruz ki
-    // ConfidenceBadge eşlemesi bozulmasın ve rapor akışı normal işlesin.
-    Console.Error.WriteLine($"HATA: LLM analizi başarısız oldu. Hata: {ex.Message}");
-    result = new AnalysisResult
-    {
-        Summary = "LLM analizi sırasında bir hata oluştu, otomatik analiz yapılamadı.",
-        RootCause = $"{ex.GetType().Name}: {ex.Message}",
-        SuggestedFix = "Lütfen logu manuel inceleyin. Sorun devam ederse Azure OpenAI bağlantısı/secret'ları kontrol edin.",
-        Confidence = "low"
-    };
-}
+var pipeline = new CiAnalysisPipeline(github, llm, report, ConsoleLogger.Create());
 
-if (result is null)
-{
-    Console.WriteLine("HATA: LLM'den null döndü (deserialize başarısız olmuş olabilir).");
-    result = new AnalysisResult
-    {
-        Summary = "LLM'den boş/geçersiz yanıt döndü, analiz atlandı.",
-        RootCause = "Deserialize işlemi başarısız oldu ya da LLM boş içerik döndürdü.",
-        SuggestedFix = "Logu manuel inceleyin.",
-        Confidence = "low"
-    };
-}
+await pipeline.RunAsync(owner, repo, runId, dryRun);
 
-Console.WriteLine("--- AnalysisResult ---");
-if (result.Skipped)
-    Console.WriteLine($"ATLANDI: {result.SkipReason}");
-else
-{
-    Console.WriteLine($"Summary:      {result.Summary}");
-    Console.WriteLine($"RootCause:    {result.RootCause}");
-    Console.WriteLine($"SuggestedFix: {result.SuggestedFix}");
-    Console.WriteLine($"Confidence:   {result.Confidence}");
-    Console.WriteLine($"AffectedFile: {result.AffectedFile}");
-    Console.WriteLine($"AffectedLine: {result.AffectedLine}");
-}
-
-// --- Adım 4: Raporlama (PR yorumu -> commit yorumu -> Job Summary) ---
-Console.WriteLine();
-Console.WriteLine("GitHub'a raporlanıyor...");
-var reportService = new ReportService(github.Client);
-await reportService.ReportAsync(result, errorContext, owner, repo, failedJob.HeadSha, runId);
-Console.WriteLine("Raporlama tamamlandı.");
+// Her PipelineStatus için exit 0: hiç başarısız job olmaması ya da analiz edilebilir
+// hata bulunamaması agent'ın hatası değil, "yapacak iş yoktu" demek. Agent'ın kendi
+// hatası zaten yukarıdaki yapılandırma kontrollerinde ya da exception olarak çıkıyor.
+return 0;
