@@ -1,0 +1,95 @@
+namespace CiAgent.Core;
+
+/// <summary>
+/// Bir düzeltmenin UYGULANMADAN ÖNCE geçmesi gereken kurallar. LLM'in ürettiği
+/// yol ve içerik güvenilmez girdi sayılır: model halüsinasyon yapabilir, log'a
+/// gömülmüş bir talimat modeli yönlendirmiş olabilir. Bu yüzden karar burada,
+/// tek ve test edilebilir bir yerde veriliyor.
+/// </summary>
+public static class FixPolicy
+{
+    /// <summary>
+    /// Tek bir çalıştırmada uygulanabilecek en fazla değişiklik. Üstü "agent
+    /// projeyi yeniden yazıyor" demektir; insan incelemesi olmadan istemeyiz.
+    /// </summary>
+    public const int MaxEdits = 10;
+
+    /// <summary>Tek bir değişikliğin en fazla boyutu (eski + yeni metin, karakter).</summary>
+    public const int MaxEditChars = 8_000;
+
+    /// <summary>
+    /// Yol güvenli mi? Reddedilme sebebini döner, sorun yoksa null.
+    ///
+    /// En önemlisi ilk kural: repo dışına çıkan yollar (../.. , /etc/passwd,
+    /// C:\...) kesinlikle reddedilir — aksi halde LLM'e verilen bir metin
+    /// agent'ı runner üzerinde rastgele dosya yazmaya ikna edebilirdi.
+    /// </summary>
+    public static string? RejectPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return "dosya yolu boş";
+
+        // Ters bölü Windows yolu ya da kaçış denemesi olabilir; tek biçime indiriyoruz.
+        var normalized = path.Replace('\\', '/').Trim();
+
+        if (normalized.StartsWith('/') || (normalized.Length > 1 && normalized[1] == ':'))
+            return $"mutlak yol kabul edilmiyor: '{path}'";
+
+        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        if (segments.Contains(".."))
+            return $"repo dışına çıkan yol kabul edilmiyor: '{path}'";
+
+        if (!normalized.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            return $"yalnızca .cs dosyaları düzenlenebilir: '{path}'";
+
+        // Workflow'lar, izinler ve agent'ın kendi tetikleyicileri burada.
+        // Agent'ın kendi güvenlik kurallarını değiştirebilmesi kabul edilemez.
+        if (segments.Length > 0 && segments[0].Equals(".github", StringComparison.OrdinalIgnoreCase))
+            return $".github/ altındaki dosyalar düzenlenemez: '{path}'";
+
+        // Test dosyalarına dokunmak yasak: LLM bir hatayı "düzeltmenin" en kolay
+        // yolu olarak testi zayıflatmayı ya da silmeyi seçebilir. Doğrulama
+        // döngüsü de anlamını yitirirdi - kendi sınavını yazan öğrenci olurdu.
+        if (IsTestPath(segments, normalized))
+            return $"test dosyaları düzenlenemez: '{path}'";
+
+        return null;
+    }
+
+    private static bool IsTestPath(string[] segments, string normalized)
+    {
+        var fileName = segments.Length > 0 ? segments[^1] : normalized;
+
+        if (fileName.EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase) ||
+            fileName.EndsWith("Test.cs", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Dizin adında "Tests"/"Test" geçen her şey (CiAgent.Tests/, test/, src/Test/)
+        return segments[..^1].Any(s =>
+            s.Equals("test", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("tests", StringComparison.OrdinalIgnoreCase) ||
+            s.EndsWith(".Tests", StringComparison.OrdinalIgnoreCase) ||
+            s.EndsWith(".Test", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Değişikliğin içeriği kabul edilebilir mi? Sebep döner, sorun yoksa null.</summary>
+    public static string? RejectEdit(CodeEdit edit)
+    {
+        var pathProblem = RejectPath(edit.File);
+        if (pathProblem is not null)
+            return pathProblem;
+
+        if (string.IsNullOrEmpty(edit.OldText))
+            return "aranacak metin boş — dosyanın tamamını değiştirmeye çalışıyor olabilir";
+
+        if (edit.OldText == edit.NewText)
+            return "eski ve yeni metin aynı, değişiklik yok";
+
+        var size = edit.OldText.Length + edit.NewText.Length;
+        if (size > MaxEditChars)
+            return $"değişiklik çok büyük ({size:N0} karakter, sınır {MaxEditChars:N0})";
+
+        return null;
+    }
+}

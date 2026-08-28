@@ -72,6 +72,17 @@ if (missing.Count > 0)
     return 1;
 }
 
+// --- Mod seçimi ---
+// İki giriş noktası var: varsayılan "analiz" (CI patlayınca çalışır) ve
+// "fix" (PR'a /fix yorumu yazılınca çalışır). Fix modu kendi hedefini
+// yorumun payload'ından aldığı için aşağıdaki owner/repo/runId çözümlemesine
+// girmiyor — başarısız run'ı kendisi buluyor.
+if (string.Equals(Environment.GetEnvironmentVariable("CI_AGENT_MODE"), "fix",
+                  StringComparison.OrdinalIgnoreCase))
+{
+    return await FixMode.RunAsync(githubToken!, azureEndpoint!, azureKey!, azureDeployment!);
+}
+
 // --- Hedef owner/repo/run ID ---
 // Öncelik sırası: komut satırı argümanı > env var > varsayılan.
 // Lokal test için `dotnet run -- owner repo runId` aynen çalışır; CI'da workflow
@@ -141,7 +152,7 @@ var github = new GitHubService(githubToken!);
 var llm = new LlmService(azureEndpoint!, azureKey!, azureDeployment!);
 var report = new ReportService(github.Client);
 
-var pipeline = new CiAnalysisPipeline(github, llm, report, ConsoleLogger.Create());
+var pipeline = new CiAnalysisPipeline(github, llm, report, ConsoleLogger.Create<CiAnalysisPipeline>());
 
 await pipeline.RunAsync(owner, repo, runId, dryRun);
 

@@ -85,6 +85,38 @@ public class GitHubService : IGitHubGateway
     return sb.ToString();
   }
 
+  // --- /fix için gerekenler ------------------------------------------
+
+  /// <summary>PR'ın hedef dalı ve HEAD commit'i.</summary>
+  public async Task<(string Branch, string HeadSha)> GetPullRequestHeadAsync(
+    string owner, string repo, int prNumber)
+  {
+    var pr = await _client.PullRequest.Get(owner, repo, prNumber);
+    return (pr.Head.Ref, pr.Head.Sha);
+  }
+
+  /// <summary>
+  /// Bir dal üzerindeki EN SON başarısız workflow run'ı. /fix'in hangi hatayı
+  /// düzelteceğini bilmesi için gerekiyor: yorum olayı bu bilgiyi taşımıyor.
+  /// </summary>
+  public async Task<long?> FindLatestFailedRunAsync(string owner, string repo, string branch)
+  {
+    var response = await _client.Actions.Workflows.Runs.List(
+      owner, repo, new WorkflowRunsRequest { Branch = branch });
+
+    return SelectLatestFailedRun(response.WorkflowRuns);
+  }
+
+  /// <summary>
+  /// Seçim mantığı ayrı: API sırasına güvenilmiyor, en yeni başarısız run
+  /// açıkça CreatedAt'e göre seçiliyor.
+  /// </summary>
+  internal static long? SelectLatestFailedRun(IEnumerable<WorkflowRun> runs) =>
+    runs.Where(r => r.Conclusion?.StringValue == "failure")
+        .OrderByDescending(r => r.CreatedAt)
+        .Select(r => (long?)r.Id)
+        .FirstOrDefault();
+
   // "Koda bakma" özelliği: ErrorContext'te FilePath+LineNumber ikisi de doluysa
   // (compile/test hataları) LLM prompt'una eklenecek kod kesiti için bu dosyanın
   // içeriği çekilir. Dosya bulunamazsa (silinmiş, yanlış path, vb.) null dönülür -
