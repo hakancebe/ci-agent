@@ -1,4 +1,6 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
+using Azure.Core;
 using System.Text;
 using System.Text.Json;
 using OpenAI;
@@ -79,11 +81,39 @@ public class LlmService
         }
         """;
     
+    /// <summary>API anahtarıyla kimlik doğrulama (lokal geliştirme, Actions).</summary>
     public LlmService(string endpoint, string apiKey, string deployment)
     {
         var client = new OpenAIClient(
             new ApiKeyCredential(apiKey),
             new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+
+        _chat = client.GetChatClient(deployment);
+    }
+
+    /// <summary>
+    /// Managed identity ile kimlik doğrulama — prod yolu.
+    ///
+    /// Buradaki kazanç sadece "bir sır daha az" değil: saklanacak, kopyalanacak
+    /// ve ESKİYEBİLECEK bir değer kalmıyor. Bu projede canlıda tam olarak o
+    /// yaşandı — eski bir API anahtarı sessizce deploy edilip hem web servisini
+    /// hem /fix job'ını bozdu, hata da saatler sonra ortaya çıktı. Token
+    /// platformdan, her seferinde taze alınınca o hata sınıfı ortadan kalkıyor.
+    ///
+    /// ApiKeyCredential'a verilen değer BİLEREK sahte: AzureEntraTokenPolicy
+    /// Authorization başlığını gerçek token'la üzerine yazıyor. SDK boş bir
+    /// kimlik kabul etmediği için yer tutucu şart.
+    /// </summary>
+    public LlmService(string endpoint, TokenCredential credential, string deployment)
+    {
+        var options = new OpenAIClientOptions { Endpoint = new Uri(endpoint) };
+
+        // PerTry: policy her deneme için yeniden koşuyor, yani token her yeniden
+        // denemede tazeleniyor. PerCall olsaydı uzun bir retry zincirinde süresi
+        // dolmuş bir token'la tekrar denenebilirdi.
+        options.AddPolicy(new AzureEntraTokenPolicy(credential), PipelinePosition.PerTry);
+
+        var client = new OpenAIClient(new ApiKeyCredential("managed-identity"), options);
 
         _chat = client.GetChatClient(deployment);
     }
@@ -222,7 +252,7 @@ public class LlmService
             if (MaxFailures is int n)
                 dropped.Add($"{FailureGrouper.Group(ctx.Failures).Count} farklı hatadan yalnızca ilk {n}'i");
 
-            return $"Prompt {MaxPromptChars:N0} karakter limitine sığması için şunlar çıkarıldı: "
+            return $"Prompt {TurkishNumber.Group(MaxPromptChars)} karakter limitine sığması için şunlar çıkarıldı: "
                  + string.Join(", ", dropped) + ".";
         }
     }

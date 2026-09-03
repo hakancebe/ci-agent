@@ -74,7 +74,7 @@ public class AnalysisResult
     public static AnalysisResult ForSkipped(int promptChars, int maxChars)
     {
         var reason =
-            $"Analiz girdisi (prompt) {promptChars:N0} karakter, limit {maxChars:N0} karakter — "
+            $"Analiz girdisi (prompt) {TurkishNumber.Group(promptChars)} karakter, limit {TurkishNumber.Group(maxChars)} karakter — "
             + "otomatik analiz limiti aştığı için yapılmadı.";
 
         return new AnalysisResult

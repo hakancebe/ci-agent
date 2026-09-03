@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CiAgent.Core\CiAgent.Core.csproj" />
+    <ProjectReference Include="..\CiAgent.Service\CiAgent.Service.csproj" />
   </ItemGroup>
 
 </Project>

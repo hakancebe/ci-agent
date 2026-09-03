@@ -17,9 +17,6 @@ public sealed record FixRequest
 
     /// <summary>GitHub'ın author_association alanı; yetki bununla belirleniyor.</summary>
     public required string AuthorAssociation { get; init; }
-
-    /// <summary>PR dalının checkout edildiği dizin.</summary>
-    public required string WorkspaceRoot { get; init; }
 }
 
 public enum FixRunStatus
@@ -30,8 +27,14 @@ public enum FixRunStatus
     /// <summary>Yorumu yazanın yazma yetkisi yok.</summary>
     NotAuthorized,
 
+    /// <summary>PR bir fork'tan geliyor — o dala push edilemez.</summary>
+    ForkNotSupported,
+
     /// <summary>Bu PR için başarısız bir CI run'ı bulunamadı.</summary>
     NoFailedRun,
+
+    /// <summary>Çalışma dizini hazırlanamadı (klonlama başarısız).</summary>
+    WorkspaceUnavailable,
 
     /// <summary>Düzeltme denendi; sonuç <see cref="FixRunResult.Fix"/> içinde.</summary>
     Completed

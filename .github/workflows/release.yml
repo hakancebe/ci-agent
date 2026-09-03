@@ -1,0 +1,111 @@
+# CiAgent sürüm yayınlama: bir `v*` etiketi atıldığında image'ı derler, ACR'a
+# push eder ve hem web servisini hem /fix job'ını o image'a günceller.
+#
+# Bu dosyanın asıl derdi hız değil, TEKRARLANABİLİRLİK. Elle deploy sırasında
+# şu yaşandı: geliştiricinin kabuğunda eski bir AZURE_OPENAI_KEY duruyordu ve
+# script'ler onu doğru sanıp ACA'ya yazdı; hem web servisi hem /fix job'ı
+# bozuldu, hata da saatler sonra "HTTP 401" olarak ortaya çıktı. Deploy'u temiz
+# bir runner'a taşımak bu hata sınıfını ortadan kaldırıyor: burada kimsenin
+# kabuğunda birikmiş değer yok.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Deploy edilecek etiket (ör. v0.3.2)"
+        required: true
+
+permissions:
+  contents: read
+  # Azure'a federated credential (OIDC) ile bağlanmak için. Parola/secret yok:
+  # GitHub kısa ömürlü bir token üretiyor, Azure ona güveniyor.
+  id-token: write
+
+env:
+  RESOURCE_GROUP: rg-ciagent
+  ACR_NAME: acrciagent0001
+  WEB_APP_NAME: ci-agent-web
+  FIX_JOB_NAME: ci-agent-fix
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Etiketi belirle
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Deploy'dan ÖNCE test: kırık bir sürümü canlıya almaktansa burada durmak.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Testler
+        run: dotnet test CiAgent.sln -c Release --nologo
+
+      - name: Azure oturumu (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Image'ı derle ve push et
+        # `az acr build` sunucu tarafında derliyor: runner'da Docker kurulumuna
+        # gerek yok ve mimari her zaman linux/amd64 (ACA'nın beklediği).
+        run: |
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "ci-agent:${{ steps.version.outputs.tag }}" \
+            --platform linux/amd64 \
+            .
+
+      - name: Web servisini güncelle
+        run: |
+          ACR_SERVER=$(az acr show -n "$ACR_NAME" -g "$RESOURCE_GROUP" --query loginServer -o tsv)
+          az containerapp update \
+            -g "$RESOURCE_GROUP" -n "$WEB_APP_NAME" \
+            --image "$ACR_SERVER/ci-agent:${{ steps.version.outputs.tag }}" \
+            --set-env-vars "CI_AGENT_FIX_JOB_IMAGE=$ACR_SERVER/ci-agent:${{ steps.version.outputs.tag }}" \
+            --only-show-errors
+
+      - name: /fix job'ını güncelle
+        # Job ve web AYNI image'ı çalıştırmalı: farklı sürümler, aynı PR'da
+        # birbiriyle tutarsız davranan iki bileşen demek olurdu.
+        run: |
+          ACR_SERVER=$(az acr show -n "$ACR_NAME" -g "$RESOURCE_GROUP" --query loginServer -o tsv)
+          az containerapp job update \
+            -g "$RESOURCE_GROUP" -n "$FIX_JOB_NAME" \
+            --image "$ACR_SERVER/ci-agent:${{ steps.version.outputs.tag }}" \
+            --only-show-errors
+
+      - name: Sağlık kontrolü
+        # Deploy'un "başarılı" demesi yetmez: servis gerçekten cevap veriyor mu?
+        # Yeni revizyonun ayağa kalkması birkaç saniye sürebildiği için tekrar deneniyor.
+        run: |
+          FQDN=$(az containerapp show -g "$RESOURCE_GROUP" -n "$WEB_APP_NAME" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$FQDN/health" || true)
+            if [ "$CODE" = "200" ]; then
+              echo "Sağlık kontrolü geçti (deneme $i)."
+              exit 0
+            fi
+            echo "deneme $i: HTTP $CODE, tekrar denenecek..."
+            sleep 10
+          done
+
+          echo "HATA: Servis 200 dönmedi; deploy edilen sürüm sağlıksız." >&2
+          exit 1

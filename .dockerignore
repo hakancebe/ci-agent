@@ -1,0 +1,15 @@
+# Build context'i küçük tutar VE cache'i korur: .git/ ya da bin/ context'e
+# girseydi her commit'te COPY katmanı invalidate olurdu.
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+.claude/
+docs/
+infra/
+**/.DS_Store
+*.user
+.env
+Dockerfile
+.dockerignore

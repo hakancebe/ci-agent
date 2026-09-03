@@ -80,19 +80,19 @@ public class GitHubService : IGitHubGateway
     // devamı var mı diye tek karakter daha yokluyoruz.
     if (total >= MaxLogChars && await reader.ReadAsync(buffer.AsMemory(0, 1)) > 0)
       Console.Error.WriteLine(
-        $"UYARI: {owner}/{repo} job {jobId} logu {MaxLogChars:N0} karakter sınırında kırpıldı, analiz eksik loga dayanıyor.");
+        $"UYARI: {owner}/{repo} job {jobId} logu {TurkishNumber.Group(MaxLogChars)} karakter sınırında kırpıldı, analiz eksik loga dayanıyor.");
 
     return sb.ToString();
   }
 
   // --- /fix için gerekenler ------------------------------------------
 
-  /// <summary>PR'ın hedef dalı ve HEAD commit'i.</summary>
-  public async Task<(string Branch, string HeadSha)> GetPullRequestHeadAsync(
+  /// <summary>PR'ın dalı, HEAD commit'i ve fork'tan gelip gelmediği.</summary>
+  public async Task<PullRequestInfo> GetPullRequestInfoAsync(
     string owner, string repo, int prNumber)
   {
     var pr = await _client.PullRequest.Get(owner, repo, prNumber);
-    return (pr.Head.Ref, pr.Head.Sha);
+    return PullRequestInfo.From(pr);
   }
 
   /// <summary>
