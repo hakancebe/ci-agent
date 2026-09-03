@@ -17,6 +17,7 @@ set -a; . ./.env; set +a
 
 GITHUB_REPO="${CI_AGENT_GITHUB_REPO:-hakancebe/ci-agent}"
 APP_NAME="${RELEASE_APP_NAME:-ci-agent-release}"
+RELEASE_ENVIRONMENT="${RELEASE_ENVIRONMENT:-production}"
 WEB_APP_NAME="${WEB_APP_NAME:-ci-agent-web}"
 FIX_JOB_NAME="${FIX_JOB_NAME:-ci-agent-fix}"
 
@@ -42,8 +43,30 @@ if [ -z "$SP_ID" ] || [ "$SP_ID" = "null" ]; then
 fi
 
 # --- Federated credential'lar ------------------------------------------------
-# Her biri "hangi repodan, hangi koşulda gelen token'a güvenilecek" diyor.
-# Etiket ve workflow_dispatch için AYRI kayıt gerekiyor: subject'ler farklı.
+# "Hangi repodan, hangi koşulda gelen token'a güvenilecek" tanımı.
+#
+# İKİ TUZAK VAR, ikisi de canlıda öğrenildi:
+#
+# 1) Subject prefix'i ARTIK repo adı değil. GitHub sahip ve repo ID'lerini de
+#    gömüyor: `repo:hakancebe@161696076/ci-agent@1336921201`. Dokümanlardaki
+#    klasik `repo:owner/repo` biçimini elle yazmak AADSTS700213 ile patlıyor.
+#    Bu yüzden prefix GitHub API'sinden OKUNUYOR, varsayılmıyor.
+#    (İyi tarafı: ID'ler değişmez, repo yeniden adlandırılsa bile kimlik bozulmaz.)
+#
+# 2) Entra ID subject'te JOKER KABUL ETMİYOR. `refs/tags/*` yazmak hiçbir zaman
+#    eşleşmez ve her etiket için ayrı kayıt açmak sürdürülemez. Çözüm: subject'i
+#    etikete değil GitHub ENVIRONMENT'ına bağlamak — hangi etiket atılırsa atılsın
+#    `...:environment:production` sabit kalıyor.
+
+SUB_PREFIX=$(gh api "repos/${GITHUB_REPO}/actions/oidc/customization/sub" \
+    --jq '.sub_claim_prefix' 2>/dev/null || true)
+
+if [ -z "$SUB_PREFIX" ]; then
+    # API bu alanı vermiyorsa klasik biçime düşüyoruz.
+    SUB_PREFIX="repo:${GITHUB_REPO}"
+    echo "    UYARI: subject prefix API'den okunamadı, klasik biçim varsayıldı"
+fi
+echo "    subject prefix: $SUB_PREFIX"
 add_federated_credential () {  # $1=ad  $2=subject
     if az ad app federated-credential list --id "$APP_ID" \
          --query "[?name=='$1']" -o tsv 2>/dev/null | grep -q .; then
@@ -61,10 +84,8 @@ add_federated_credential () {  # $1=ad  $2=subject
 }
 
 echo "==> Federated credential'lar ($GITHUB_REPO)"
-# Etiketle tetiklenen sürümler.
-add_federated_credential "release-tags" "repo:${GITHUB_REPO}:ref:refs/tags/*"
-# Elle tetikleme (workflow_dispatch) main dalından koşuyor.
-add_federated_credential "release-main" "repo:${GITHUB_REPO}:ref:refs/heads/main"
+# Environment'a bağlı: etiket adından bağımsız, tek kayıt her sürüm için yeterli.
+add_federated_credential "release-environment" "${SUB_PREFIX}:environment:${RELEASE_ENVIRONMENT}"
 
 # --- Rol atamaları -----------------------------------------------------------
 # Abonelik geneli Contributor VERMİYORUZ: bu kimlik yalnızca image push edip
@@ -102,9 +123,13 @@ GitHub'da şu repository secret'larını tanımlayın:
 Bunlar SIR DEĞİL (kimlik numaraları); parola saklanmıyor. Secret olarak
 tutulmalarının sebebi yalnızca loglarda görünmemeleri.
 
+release.yml'deki job şu satırı içermeli (subject bununla eşleşiyor):
+
+  environment: ${RELEASE_ENVIRONMENT}
+
 Sonra sürüm yayınlamak için:
 
-  git tag v0.3.2 && git push origin v0.3.2
+  git tag v0.3.4 && git push origin v0.3.4
 
 Rol atamalarının yayılması birkaç dakika sürebilir.
 ======================================================
