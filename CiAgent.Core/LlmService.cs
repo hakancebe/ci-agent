@@ -252,7 +252,7 @@ public class LlmService
             if (MaxFailures is int n)
                 dropped.Add($"{FailureGrouper.Group(ctx.Failures).Count} farklı hatadan yalnızca ilk {n}'i");
 
-            return $"Prompt {MaxPromptChars:N0} karakter limitine sığması için şunlar çıkarıldı: "
+            return $"Prompt {TurkishNumber.Group(MaxPromptChars)} karakter limitine sığması için şunlar çıkarıldı: "
                  + string.Join(", ", dropped) + ".";
         }
     }

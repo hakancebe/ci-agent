@@ -88,7 +88,7 @@ public static class FixPolicy
 
         var size = edit.OldText.Length + edit.NewText.Length;
         if (size > MaxEditChars)
-            return $"değişiklik çok büyük ({size:N0} karakter, sınır {MaxEditChars:N0})";
+            return $"değişiklik çok büyük ({TurkishNumber.Group(size)} karakter, sınır {TurkishNumber.Group(MaxEditChars)})";
 
         return null;
     }

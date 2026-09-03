@@ -80,7 +80,7 @@ public class GitHubService : IGitHubGateway
     // devamı var mı diye tek karakter daha yokluyoruz.
     if (total >= MaxLogChars && await reader.ReadAsync(buffer.AsMemory(0, 1)) > 0)
       Console.Error.WriteLine(
-        $"UYARI: {owner}/{repo} job {jobId} logu {MaxLogChars:N0} karakter sınırında kırpıldı, analiz eksik loga dayanıyor.");
+        $"UYARI: {owner}/{repo} job {jobId} logu {TurkishNumber.Group(MaxLogChars)} karakter sınırında kırpıldı, analiz eksik loga dayanıyor.");
 
     return sb.ToString();
   }
