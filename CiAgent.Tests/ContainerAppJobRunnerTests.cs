@@ -163,6 +163,46 @@ public class ContainerAppJobRunnerTests
     }
 
     [Fact]
+    public void BuildEnvironment_ResuppliesAppInsightsConnectionStringWhenConfigured()
+    {
+        // Faz 3'te web servisine izleme eklenmişti, job'a HİÇ eklenmemişti —
+        // /fix çalışmaları (ARM sorguları, GitHub App token üretimi, LLM
+        // çağrıları) görünmüyordu. Burada da PATCH'in silmemesi için her
+        // çalıştırmada yeniden verilmeli, tıpkı GITHUB_APP_ID gibi.
+        var runner = new ContainerAppJobRunner(
+            new ServiceOptions
+            {
+                AppId = "123456", PrivateKeyPem = "pem", WebhookSecret = "secret",
+                AzureOpenAiEndpoint = "https://example.openai.azure.com",
+                AzureOpenAiKey = "key", AzureOpenAiDeployment = "gpt-4o",
+                WatchedWorkflows = ["CI"],
+                AzureSubscriptionId = "sub", AzureResourceGroup = "rg",
+                FixJobName = "ci-agent-fix", FixJobImage = "acr.azurecr.io/ci-agent:v1",
+                AppInsightsConnectionString = "InstrumentationKey=abc123"
+            },
+            NullLogger<ContainerAppJobRunner>.Instance);
+
+        var env = runner.BuildEnvironment(Job).Select(Serialize).ToList();
+        var entry = env.SingleOrDefault(
+            e => e.GetProperty("name").GetString() == "APPLICATIONINSIGHTS_CONNECTION_STRING");
+
+        Assert.NotEqual(default, entry);
+        Assert.Equal("InstrumentationKey=abc123", entry.GetProperty("value").GetString());
+    }
+
+    [Fact]
+    public void BuildEnvironment_OmitsAppInsightsWhenNotConfigured()
+    {
+        // İzleme opsiyonel: yapılandırılmamışsa env'e boş/null bir değer
+        // eklenmemeli, alan hiç görünmemeli.
+        var names = Build().BuildEnvironment(Job)   // Build() AppInsightsConnectionString vermiyor
+            .Select(e => Serialize(e).GetProperty("name").GetString())
+            .ToList();
+
+        Assert.DoesNotContain("APPLICATIONINSIGHTS_CONNECTION_STRING", names);
+    }
+
+    [Fact]
     public void BuildEnvironment_NoGitHubTokenIsPassed()
     {
         // Hazır bir installation token GEÇİRİLMİYOR; job kendi token'ını App

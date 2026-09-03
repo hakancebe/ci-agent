@@ -49,6 +49,7 @@ fi
     || { echo "HATA: private key bulunamadı: '$GITHUB_APP_PRIVATE_KEY_PATH'" >&2; exit 1; }
 
 validate_openai_key || exit 1
+load_appinsights_connection_string
 
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 ACR_SERVER=$(az acr show -n "$ACR_NAME" -g "$RG" --query loginServer -o tsv)
@@ -82,6 +83,14 @@ ENV_VARS=(
 if ! use_managed_identity; then
     SECRETS+=("azure-openai-key=$AZURE_OPENAI_KEY")
     ENV_VARS+=("AZURE_OPENAI_KEY=secretref:azure-openai-key")
+fi
+
+# Bu, yalnızca job'ın BAŞLANGIÇ tanımına yazıyor. Gerçek /fix çalışmalarında
+# ContainerAppJobRunner.BuildEnvironment her seferinde tanımı PATCH'lediği
+# için AYNI değeri orada da yeniden vermek ŞART — yoksa ilk /fix'te sessizce
+# silinir (AZURE_OPENAI_KEY'de yaşanan hatanın aynısı, bkz. o dosyanın yorumu).
+if [ -n "${APPLICATIONINSIGHTS_CONNECTION_STRING:-}" ]; then
+    ENV_VARS+=("APPLICATIONINSIGHTS_CONNECTION_STRING=$APPLICATIONINSIGHTS_CONNECTION_STRING")
 fi
 
 if az containerapp job show -g "$RG" -n "$JOB_NAME" >/dev/null 2>&1; then

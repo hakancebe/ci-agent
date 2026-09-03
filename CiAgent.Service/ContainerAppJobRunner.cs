@@ -236,6 +236,15 @@ internal sealed class ContainerAppJobRunner
         else if (!string.IsNullOrWhiteSpace(_options.AzureClientId))
             env.Add(Value("AZURE_CLIENT_ID", _options.AzureClientId));
 
+        // İzleme opsiyonel ve OpenAI kimlik doğrulama kararından BAĞIMSIZ: web
+        // servisi Faz 3'te izleme aldı, job'a hiç eklenmemişti — /fix çalışmaları
+        // (ARM sorguları, GitHub App token üretimi, LLM çağrıları) şu ana kadar
+        // görünmezdi. Burada da PATCH'in silmemesi için her çalıştırmada
+        // yeniden veriliyor, tıpkı yukarıdaki diğer "job'ın kendi tanımından
+        // gelen" değerler gibi.
+        if (!string.IsNullOrWhiteSpace(_options.AppInsightsConnectionString))
+            env.Add(Value("APPLICATIONINSIGHTS_CONNECTION_STRING", _options.AppInsightsConnectionString));
+
         return env.ToArray();
     }
 
