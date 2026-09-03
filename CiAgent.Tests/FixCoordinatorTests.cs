@@ -23,6 +23,17 @@ public class FixCoordinatorTests
             => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
     }
 
+    /// <summary>
+    /// Hazırlanırsa testi düşüren workspace - "erken çıkışlarda repo klonlanmıyor"
+    /// iddiasını sabitler. Cleanup güvenli: her yolda çağrılması BEKLENEN davranış.
+    /// </summary>
+    private sealed class ExplodingWorkspace : IWorkspaceProvider
+    {
+        public Task<string?> PrepareAsync(string o, string r, string b)
+            => throw new InvalidOperationException("çalışma dizini hiç hazırlanmamalıydı");
+        public void Cleanup() { }
+    }
+
     private sealed class ExplodingVerifier : IVerificationRunner
     {
         public Task<VerificationResult> VerifyAsync(string workingDirectory)
@@ -53,14 +64,14 @@ public class FixCoordinatorTests
             github,
             new CiAnalysisPipeline(new ExplodingGateway(), llm, new ReportService(client.Object)),
             new FixPipeline(llm, new ExplodingVerifier()),
-            new PrCommenter(client.Object));
+            new PrCommenter(client.Object),
+            new ExplodingWorkspace());
     }
 
     private static FixRequest Request(string body, string association) => new()
     {
         Owner = "o", Repo = "r", PullRequestNumber = 7,
-        CommentId = 42, CommentBody = body, AuthorAssociation = association,
-        WorkspaceRoot = Path.GetTempPath()
+        CommentId = 42, CommentBody = body, AuthorAssociation = association
     };
 
     [Theory]

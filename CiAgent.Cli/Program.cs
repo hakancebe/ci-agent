@@ -57,18 +57,41 @@ var azureEndpoint = config["AZURE_OPENAI_ENDPOINT"] ?? config["AzureOpenAI:Endpo
 var azureKey = config["AZURE_OPENAI_KEY"] ?? config["AzureOpenAI:ApiKey"];
 var azureDeployment = config["AZURE_OPENAI_DEPLOYMENT"] ?? config["AzureOpenAI:DeploymentName"];
 
+// GITHUB_TOKEN yoksa, GitHub App kimliğiyle kendimiz üretebiliyoruz. Container
+// Apps Job bu yolu kullanıyor: job'a hazır bir token GEÇİRİLMİYOR, çünkü o token
+// ARM API çağrısının gövdesinde ve job'ın env var listesinde görünür olurdu.
+// Bunun yerine job'a App private key'i (ACA secret'ı) ve installation id veriliyor;
+// token container'ın içinde, kullanılacağı anda üretiliyor.
+if (string.IsNullOrWhiteSpace(githubToken))
+{
+    var appCredentials = GitHubTokenSource.TryReadAppCredentials(
+        config["GITHUB_APP_ID"],
+        config["GITHUB_APP_PRIVATE_KEY"],
+        config["CI_AGENT_INSTALLATION_ID"]);
+
+    if (appCredentials is not null)
+    {
+        Console.WriteLine(
+            $"GitHub App kimliğiyle installation token üretiliyor "
+            + $"(installation {appCredentials.InstallationId}).");
+
+        githubToken = await new GitHubAppAuth(appCredentials.AppId, appCredentials.PrivateKeyPem)
+            .GetInstallationTokenAsync(appCredentials.InstallationId);
+    }
+}
+
 var missing = new List<string>();
 if (string.IsNullOrWhiteSpace(githubToken)) missing.Add("GITHUB_TOKEN");
 if (string.IsNullOrWhiteSpace(azureEndpoint)) missing.Add("AZURE_OPENAI_ENDPOINT");
-if (string.IsNullOrWhiteSpace(azureKey)) missing.Add("AZURE_OPENAI_KEY");
 if (string.IsNullOrWhiteSpace(azureDeployment)) missing.Add("AZURE_OPENAI_DEPLOYMENT");
 
 if (missing.Count > 0)
 {
     Console.Error.WriteLine($"HATA: Şu env var'lar eksik: {string.Join(", ", missing)}");
     Console.Error.WriteLine(
-        "GITHUB_TOKEN GitHub API çağrıları içindir, AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_KEY / "
-        + "AZURE_OPENAI_DEPLOYMENT ise Azure OpenAI için ayrı secret'lardır.");
+        "GITHUB_TOKEN GitHub API çağrıları içindir, AZURE_OPENAI_ENDPOINT / "
+        + "AZURE_OPENAI_DEPLOYMENT ise Azure OpenAI içindir. AZURE_OPENAI_KEY zorunlu "
+        + "DEĞİL: verilmezse managed identity kullanılır (prod yolu).");
     return 1;
 }
 
@@ -80,7 +103,8 @@ if (missing.Count > 0)
 if (string.Equals(Environment.GetEnvironmentVariable("CI_AGENT_MODE"), "fix",
                   StringComparison.OrdinalIgnoreCase))
 {
-    return await FixMode.RunAsync(githubToken!, azureEndpoint!, azureKey!, azureDeployment!);
+    return await FixMode.RunAsync(
+        githubToken!, azureEndpoint!, azureKey, azureDeployment!, config["AZURE_CLIENT_ID"]);
 }
 
 // --- Hedef owner/repo/run ID ---
@@ -149,7 +173,8 @@ if (!long.TryParse(runIdRaw, out var runId))
 
 // --- Bağımlılıkları kur ve çalıştır ---
 var github = new GitHubService(githubToken!);
-var llm = new LlmService(azureEndpoint!, azureKey!, azureDeployment!);
+var llm = LlmServiceFactory.Create(
+    azureEndpoint!, azureKey, azureDeployment!, config["AZURE_CLIENT_ID"]);
 var report = new ReportService(github.Client);
 
 var pipeline = new CiAnalysisPipeline(github, llm, report, ConsoleLogger.Create<CiAnalysisPipeline>());

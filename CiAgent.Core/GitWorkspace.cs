@@ -11,6 +11,11 @@ namespace CiAgent.Core;
 /// Bilerek yapılmayanlar: force-push YOK, rebase YOK, dal değiştirme YOK.
 /// Agent yalnızca zaten checkout edilmiş dalın üzerine normal bir commit ekler;
 /// insanın yazdığı geçmişi asla yeniden yazamaz.
+///
+/// Git çıktısı loglanmadan önce Masker'dan geçiyor: GitCloner remote URL'ine
+/// installation token'ı gömüyor ve git, başarısız bir push'ta o URL'i hata
+/// mesajına basıyor. Maskeleme olmadan token düz metin olarak Log Analytics'e
+/// düşerdi - saatlerce geçerli, repoya yazma yetkisi olan bir token.
 /// </summary>
 public sealed class GitWorkspace
 {
@@ -41,7 +46,7 @@ public sealed class GitWorkspace
             var add = await RunGitAsync("add", "--", path);
             if (!add.Ok)
             {
-                _log.LogError("git add başarısız ({Path}): {Output}", path, add.Output);
+                _log.LogError("git add başarısız ({Path}): {Output}", path, Masker.Mask(add.Output));
                 return false;
             }
         }
@@ -57,14 +62,14 @@ public sealed class GitWorkspace
         var commit = await RunGitAsync("commit", "-m", commitMessage);
         if (!commit.Ok)
         {
-            _log.LogError("git commit başarısız: {Output}", commit.Output);
+            _log.LogError("git commit başarısız: {Output}", Masker.Mask(commit.Output));
             return false;
         }
 
         var push = await RunGitAsync("push", "origin", $"HEAD:{branch}");
         if (!push.Ok)
         {
-            _log.LogError("git push başarısız: {Output}", push.Output);
+            _log.LogError("git push başarısız: {Output}", Masker.Mask(push.Output));
             return false;
         }
 

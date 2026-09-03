@@ -87,12 +87,12 @@ public class GitHubService : IGitHubGateway
 
   // --- /fix için gerekenler ------------------------------------------
 
-  /// <summary>PR'ın hedef dalı ve HEAD commit'i.</summary>
-  public async Task<(string Branch, string HeadSha)> GetPullRequestHeadAsync(
+  /// <summary>PR'ın dalı, HEAD commit'i ve fork'tan gelip gelmediği.</summary>
+  public async Task<PullRequestInfo> GetPullRequestInfoAsync(
     string owner, string repo, int prNumber)
   {
     var pr = await _client.PullRequest.Get(owner, repo, prNumber);
-    return (pr.Head.Ref, pr.Head.Sha);
+    return PullRequestInfo.From(pr);
   }
 
   /// <summary>

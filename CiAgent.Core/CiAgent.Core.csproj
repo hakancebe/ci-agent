@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Managed identity ile Azure OpenAI erişimi (AzureEntraTokenPolicy).
+         Azure.AI.OpenAI yerine bu: o paket endpoint yolunu kendi kuruyor ve
+         bizim ".../openai/v1/" biçimindeki adresimizi bozardı. -->
+    <PackageReference Include="Azure.Identity" Version="1.13.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
     <PackageReference Include="Octokit" Version="14.0.0" />
     <PackageReference Include="OpenAI" Version="2.13.0" />
