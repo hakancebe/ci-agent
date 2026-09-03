@@ -107,7 +107,15 @@ WEB_ID=$(az containerapp show -g "$RG" -n "$WEB_APP_NAME" --query id -o tsv)
 JOB_ID=$(az containerapp job show -g "$RG" -n "$FIX_JOB_NAME" --query id -o tsv)
 
 echo "==> Rol atamaları"
-assign_role "AcrPush" "$ACR_ID"                      # az acr build + push
+assign_role "AcrPush" "$ACR_ID"                      # image push
+# AcrPush TEK BAŞINA yetmiyor: yalnızca pull/read ve push/write veriyor,
+# "Microsoft.ContainerRegistry/registries/read" (kaynağın kendisini görme)
+# içermiyor. `az acr build` önce registry'yi bulmaya çalışıyor; bu izin
+# olmadan ARM kaynağı "yok" gibi gösteriyor (403'ü 404 gibi gizliyor) —
+# canlıda "could not be found in subscription" diye ortaya çıktı.
+# Reader kapsamı yalnızca BU ACR kaynağıyla sınırlı, abonelik geneline
+# yayılmıyor; dar kapsam ilkesi bozulmuyor.
+assign_role "Reader" "$ACR_ID"                       # az acr build'in registry'yi bulabilmesi için
 assign_role "Contributor" "$WEB_ID"                  # containerapp update
 assign_role "Container Apps Jobs Contributor" "$JOB_ID"
 
