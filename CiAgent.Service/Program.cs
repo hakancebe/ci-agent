@@ -44,12 +44,23 @@ if (options.FixEnabled)
     builder.Services.AddSingleton(sp => new ContainerAppJobRunner(
         options, sp.GetRequiredService<ILogger<ContainerAppJobRunner>>()));
 }
-else
-{
-    builder.Services.AddSingleton<ContainerAppJobRunner?>(_ => null);
-}
 
-builder.Services.AddHostedService<AnalysisWorker>();
+// Worker açıkça kuruluyor, AddHostedService<AnalysisWorker>() ile değil.
+// Sebep: /fix kapalıyken ContainerAppJobRunner hiç KAYITLI DEĞİL ve worker onu
+// opsiyonel alıyor. GetService (GetRequiredService değil) kayıtlı olmayan servis
+// için null döner — "yoksa null" niyetini doğrudan ifade eden yol bu.
+//
+// Önceki hali `AddSingleton<ContainerAppJobRunner?>(_ => null)` idi: çalışıyordu
+// ama AddSingleton'ın `where TService : class` kısıtını nullable bir tiple
+// deliyordu (CS8634). Null'ı kaydetmek yerine hiç kaydetmemek hem tip güvenli
+// hem de daha dürüst — "bu servis yok" demenin doğru yolu onu yaratmamak.
+builder.Services.AddHostedService(sp => new AnalysisWorker(
+    sp.GetRequiredService<WorkQueue>(),
+    sp.GetRequiredService<GitHubAppAuth>(),
+    sp.GetRequiredService<LlmService>(),
+    sp.GetRequiredService<ILogger<AnalysisWorker>>(),
+    sp.GetRequiredService<ILoggerFactory>(),
+    sp.GetService<ContainerAppJobRunner>()));
 
 var app = builder.Build();
 
