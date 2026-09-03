@@ -1,0 +1,98 @@
+# CiAgent'ın kendi CI'ı: PR'lar ve main'e push'lar burada doğrulanıyor.
+#
+# Neden gerekti: 302 testi olan bir projenin PR'larında o testler otomatik
+# koşmuyordu. Testler yalnızca geliştiricinin makinesinde ve release.yml içinde
+# (yani MERGE SONRASI, etiket atıldığında) çalışıyordu — hatalı bir PR merge
+# edilebilir, sorun ancak sürüm yayınlanırken fark edilirdi.
+#
+# Buradaki üç iş, bu oturumda canlıda karşılaşılan üç hata sınıfına karşılık
+# geliyor; üçü de daha erken yakalanabilirdi.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Aynı PR'a arka arkaya push edilirse eski koşuyu iptal et: yalnızca son hâlin
+# sonucu anlamlı, öncekiler boşa dakika harcar.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Derleme ve testler
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # NuGet cache: restore'u her koşuda sıfırdan yapmak dakikalar yiyor.
+      # Anahtar csproj'lara bağlı — bağımlılık değişmedikçe cache geçerli.
+      - name: NuGet cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore CiAgent.sln
+
+      - name: Build
+        # warnaserror: uyarıların birikmesini engelliyor. Şu an sıfır uyarı var;
+        # bu eşiği korumak, sonradan "hepsini temizleme" borcuna girmekten kolay.
+        run: dotnet build CiAgent.sln -c Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test CiAgent.sln -c Release --no-build --nologo
+
+  docker:
+    name: Image derleniyor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Image'ı PUSH ETMİYORUZ, yalnızca derliyoruz: amaç Dockerfile'ın bozulmadığını
+      # doğrulamak. Bu oturumda iki Dockerfile hatası (NETSDK1064 ve "user 'app'
+      # already exists") ancak ACR'da build denenince ortaya çıkmıştı — ikisi de
+      # burada yakalanabilirdi.
+      #
+      # platform linux/amd64 açıkça veriliyor: ACA amd64 bekliyor ve mimari
+      # uyuşmazlığı ancak container başlatılırken "exec format error" olarak çıkar.
+      - name: Docker build
+        run: docker build --platform linux/amd64 -t ci-agent:ci-check .
+
+      - name: Image gerçekten çalışıyor mu?
+        # Derlenmesi yetmez: entrypoint'in doğru ikiliyi bulduğunu da görelim.
+        # --help hiçbir yapılandırma gerektirmediği için sır olmadan koşabiliyor.
+        run: docker run --rm ci-agent:ci-check --help
+
+  scripts:
+    name: Altyapı script'leri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Shell sözdizimi hataları bu oturumda yalnızca script çalıştırılınca —
+      # yani Azure'a bağlanıldıktan sonra — ortaya çıkıyordu. `bash -n` hiçbir
+      # komut ÇALIŞTIRMADAN sözdizimini denetliyor, yani Azure erişimi gerekmiyor.
+      - name: Sözdizimi denetimi
+        run: |
+          for f in infra/*.sh docker/*.sh; do
+            echo "denetleniyor: $f"
+            bash -n "$f"
+          done
+
+      - name: shellcheck
+        # Sözdiziminin ötesi: tırnaklanmamış değişken, yutulan hata kodu gibi
+        # kabuk tuzakları. Uyarılar bilgilendirici, koşuyu düşürmüyor — mevcut
+        # script'leri baştan temizlemeye zorlamadan sinyal veriyor.
+        continue-on-error: true
+        run: shellcheck infra/*.sh docker/*.sh
