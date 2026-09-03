@@ -34,6 +34,16 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+
+    # Azure'a bağlanan OIDC token'ının subject'i buna bağlı:
+    # `repo:<sahip>@<id>/<repo>@<id>:environment:production`
+    #
+    # Neden etikete değil environment'a bağlı? Entra ID federated credential
+    # subject'inde JOKER kabul etmiyor; `refs/tags/*` hiçbir zaman eşleşmez ve
+    # her etiket için ayrı kayıt açmak sürdürülemez. Environment sabit olduğu
+    # için tek kayıt bütün sürümlere yetiyor.
+    environment: production
+
     steps:
       - uses: actions/checkout@v4
 
