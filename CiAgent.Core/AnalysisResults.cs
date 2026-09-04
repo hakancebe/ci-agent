@@ -27,6 +27,22 @@ public class Analysis
 
     [JsonPropertyName("affectedLine")]
     public int? AffectedLine { get; init; }
+
+    /// <summary>
+    /// Doğru düzeltme GÖSTERİLEN koddan belirlenebiliyor mu? false ise /fix hiç
+    /// denenmez.
+    ///
+    /// Neden bu alan var: analiz katmanı "bu koddan çıkarılamaz" tespitini üç ayrı
+    /// canlı denemede DOĞRU yaptı, ama tespit düz metin içinde kaldığı için /fix'i
+    /// durduramadı ve /fix her seferinde derlemeyi geçiren bir yol uydurdu
+    /// (literal, boş string, yorum satırı). Alanın yapısal olması, doğru bilginin
+    /// bağlayıcı hâle gelmesini sağlıyor.
+    ///
+    /// Varsayılan true: alan gelmezse (eski kayıt, LLM hatası) akış eskisi gibi
+    /// çalışır — yalnızca AÇIKÇA false denmesi /fix'i durdurur.
+    /// </summary>
+    [JsonPropertyName("fixable")]
+    public bool Fixable { get; init; } = true;
 }
 
 public class AnalysisResult

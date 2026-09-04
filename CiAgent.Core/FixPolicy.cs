@@ -124,36 +124,60 @@ public static class FixPolicy
             .ToList();
 
     /// <summary>
-    /// Bu değişiklik, tanımsız bir adı "yerine literal koyarak" ortadan
-    /// kaldırıyor mu? Sebep döner, sorun yoksa null.
+    /// Bu değişiklik tanımsız bir adı GERÇEKTEN çözüyor mu, yoksa yalnızca
+    /// derleyiciyi susturuyor mu? Sebep döner, sorun yoksa null.
     ///
-    /// Ayırt edici bilinçli olarak dar: adın KAYBOLMASI tek başına yeterli değil,
-    /// çünkü meşru yazım hatası düzeltmesi de adı kaldırır (a + bbb -> a + b).
-    /// Reddedilen şey, adın yerine kodda dayanağı olmayan bir LİTERAL gelmesi.
-    /// Adı gerçekten tanımlayan bir düzeltme (string x = ...; ... x ...) adı
-    /// koruduğu için buradan geçer.
+    /// Kural bilinçli olarak BEYAZ LİSTE: kötü biçimleri tek tek saymak kaybedilen
+    /// bir oyun oldu — canlıda dört tur, dört kaçış yolu çıktı (uydurma literal,
+    /// farklı literal, boş string, satırı yorum yapmak) ve sıradakiler hazırdı
+    /// (satırı silmek, ';' bırakmak, #if false). Bu yüzden artık MEŞRU olan iki
+    /// biçim tanımlanıyor, gerisi reddediliyor:
+    ///
+    ///   1) Yazım hatası: ad, kapsamdaki BAŞKA BİR ADLA değiştirilir
+    ///      (a + bbb -> a + b). Yeni bir tanımlayıcı gelir, literal gelmez.
+    ///   2) Tanımlama: ad canlı kodda KALIR, yanına tanımı eklenir.
+    ///
+    /// Karşılaştırma yorumlar AYIKLANARAK yapılıyor: satırı yorum yapmak adı
+    /// metinsel olarak korur ama anlamsal olarak yok eder — ilk sürüm tam bu
+    /// yüzden atlamıştı.
     /// </summary>
     public static string? RejectPlaceholderEdit(
         CodeEdit edit, IReadOnlyCollection<string> undefinedNames)
     {
+        var oldLive = StripComments(edit.OldText);
+        var newLive = StripComments(edit.NewText);
+
         foreach (var name in undefinedNames)
         {
             // Bu edit o adı hiç ilgilendirmiyorsa konumuz değil.
-            if (!ContainsIdentifier(edit.OldText, name))
+            if (!ContainsIdentifier(oldLive, name))
                 continue;
 
-            // Ad yeni metinde hâlâ duruyorsa sorun yok: ya tanımlanmış ya da
-            // o satıra dokunulmamış.
-            if (ContainsIdentifier(edit.NewText, name))
+            // Ad canlı kodda hâlâ duruyorsa: ya tanımlanmış ya da o satıra
+            // dokunulmamış. İkisi de meşru; gerçekten düzelip düzelmediğine
+            // doğrulama (derleme + test) karar verir.
+            if (ContainsIdentifier(newLive, name))
                 continue;
 
-            var introduced = IntroducedLiterals(edit.OldText, edit.NewText);
-            if (introduced.Count > 0)
+            // Buradan sonrası tehlikeli bölge: ad CANLI KODDAN kayboldu, yani
+            // değişiklik derlenecek ve "düzeltildi" gibi görünecek.
+            var literals = IntroducedLiterals(oldLive, newLive);
+            if (literals.Count > 0)
             {
                 return $"tanımsız '{name}' adı, kodda dayanağı olmayan bir literal "
-                     + $"({string.Join(", ", introduced)}) ile değiştirilmiş — bu hatayı "
-                     + "düzeltmez, gizler. Adın ne olması gerektiği koddan çıkarılamıyorsa "
-                     + "edits'i BOŞ bırak.";
+                     + $"({string.Join(", ", literals)}) ile değiştirilmiş — bu hatayı "
+                     + "düzeltmez, gizler. Adın ne olması gerektiği koddan "
+                     + "çıkarılamıyorsa edits'i BOŞ bırak.";
+            }
+
+            // Literal yok ama yerine yeni bir AD da gelmediyse, kod düzeltilmedi:
+            // yorum satırına alındı, silindi ya da başka bir yolla etkisizleştirildi.
+            if (IntroducedIdentifiers(oldLive, newLive).Count == 0)
+            {
+                return $"tanımsız '{name}' adı düzeltilmemiş, kod etkisizleştirilmiş "
+                     + "(yorum satırına alınmış, silinmiş ya da boşaltılmış) — bu hatayı "
+                     + "düzeltmez, gizler. Adı ya kapsamdaki doğru adla değiştir, ya "
+                     + "tanımla, ya da edits'i BOŞ bırak.";
             }
         }
 
@@ -163,6 +187,35 @@ public static class FixPolicy
     /// <summary>Ad, metinde tam bir tanımlayıcı olarak geçiyor mu? (abbbc içindeki bbb sayılmaz.)</summary>
     private static bool ContainsIdentifier(string text, string name) =>
         Regex.IsMatch(text, $@"(?<![A-Za-z0-9_]){Regex.Escape(name)}(?![A-Za-z0-9_])");
+
+    /// <summary>
+    /// Satır ve blok yorumlarını çıkarır. Amaç metni derlemek değil, "bu kod
+    /// gerçekten çalışıyor mu" sorusuna yaklaşık ama işe yarar bir cevap vermek.
+    /// </summary>
+    private static string StripComments(string text) =>
+        Regex.Replace(text, @"/\*.*?\*/|//[^\n]*", "", RegexOptions.Singleline);
+
+    /// <summary>
+    /// newText'te olup oldText'te olmayan tanımlayıcılar. Literal benzeri anahtar
+    /// kelimeler (null, true, false, default) DIŞARIDA: onlarla değiştirmek de
+    /// yer tutucudur, "başka bir ad kullandı" sayılmamalı.
+    /// </summary>
+    private static List<string> IntroducedIdentifiers(string oldText, string newText)
+    {
+        var before = IdentifierPattern.Matches(oldText).Select(m => m.Value).ToHashSet(StringComparer.Ordinal);
+
+        return IdentifierPattern.Matches(newText)
+            .Select(m => m.Value)
+            .Where(id => !before.Contains(id) && !LiteralKeywords.Contains(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static readonly Regex IdentifierPattern =
+        new(@"[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
+
+    private static readonly HashSet<string> LiteralKeywords =
+        new(StringComparer.Ordinal) { "null", "true", "false", "default" };
 
     /// <summary>
     /// newText'te olup oldText'te olmayan literaller. Çokluk korunuyor: aynı

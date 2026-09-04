@@ -186,6 +186,74 @@ public sealed class FixPipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_DoesNotEvenTry_WhenAnalysisSaysNotFixable()
+    {
+        // Analiz "düzeltme koddan çıkarılamıyor" dediyse hiçbir şey yapılmamalı:
+        // LLM'e gidilmemeli (para), dosya okunmamalı, doğrulama koşmamalı.
+        WriteFile("src/Calc.cs", "Console.WriteLine(tanimsizDegisken);");
+
+        var analysis = new AnalysisResult
+        {
+            Summary = "Tanımsız değişken.",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "Tanımsız ad", RootCause = "tanimsizDegisken tanımlı değil",
+                    SuggestedFix = "Bu değişkenin ne olması gerektiği koddan çıkarılamıyor.",
+                    Confidence = "medium", AffectedFile = "src/Calc.cs", AffectedLine = 1,
+                    Fixable = false
+                }
+            }
+        };
+
+        var llm = new ScriptedLlm();
+        var verifier = new ScriptedVerifier();
+
+        var outcome = await new FixPipeline(llm, verifier).RunAsync(Context(), analysis, _root);
+
+        Assert.Equal(FixStatus.NotAutomaticallyFixable, outcome.Status);
+        Assert.Equal(0, llm.CallCount);
+        Assert.Equal(0, verifier.CallCount);
+        Assert.Contains("çıkarılamıyor", outcome.Summary);
+    }
+
+    [Fact]
+    public async Task RunAsync_StillTries_WhenAtLeastOneAnalysisIsFixable()
+    {
+        // Karışık durum: bağımsız iki sorundan biri düzeltilebilir. Tek bir
+        // fixable=false yüzünden tüm akışı durdurmak yanlış olurdu.
+        var path = WriteFile("src/Calc.cs", "int Add(int a, int b) => a - b;");
+
+        var analysis = new AnalysisResult
+        {
+            Summary = "İki bağımsız sorun.",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "Belirsiz", RootCause = "?", SuggestedFix = "?",
+                    Confidence = "low", AffectedFile = "src/Other.cs", Fixable = false
+                },
+                new Analysis
+                {
+                    Title = "Yanlış operatör", RootCause = "a - b yazılmış",
+                    SuggestedFix = "a + b", Confidence = "high",
+                    AffectedFile = "src/Calc.cs", AffectedLine = 1, Fixable = true
+                }
+            }
+        };
+
+        var llm = new ScriptedLlm(Proposal("düzeltildi", ("src/Calc.cs", "a - b", "a + b")));
+        var verifier = new ScriptedVerifier(Pass);
+
+        var outcome = await new FixPipeline(llm, verifier).RunAsync(Context(), analysis, _root);
+
+        Assert.Equal(FixStatus.Fixed, outcome.Status);
+        Assert.Equal("int Add(int a, int b) => a + b;", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
     public async Task RunAsync_RejectsPlaceholderEdit_AndNeverVerifies()
     {
         // Canlıda üç turda üç kez görülen davranış: tanımsız adı bir literalle

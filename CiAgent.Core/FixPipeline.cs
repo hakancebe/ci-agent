@@ -18,6 +18,12 @@ public enum FixStatus
     /// kullanıcıya "altyapı sorunu" değil "bu dosya kapsam dışı" denmeli.</summary>
     FilesRejected,
 
+    /// <summary>
+    /// Analiz, doğru düzeltmenin koddan belirlenemediğini söyledi (fixable=false).
+    /// Denemeye HİÇ girilmedi — LLM'e gidilmedi, dosya okunmadı.
+    /// </summary>
+    NotAutomaticallyFixable,
+
     /// <summary>LLM güvenli bir düzeltme öneremedi (boş öneri ya da prompt sığmadı).</summary>
     NoProposal,
 
@@ -87,6 +93,22 @@ public sealed class FixPipeline
         string workspaceRoot,
         bool dryRun = false)
     {
+        // Önkoşul: analiz "bu düzeltme koddan çıkarılamaz" dediyse hiç başlama.
+        // Bu kontrol EN BAŞTA çünkü diğer her şey (dosya okuma, LLM çağrısı,
+        // derleme) boşa harcanmış olurdu. Analiz katmanı bu tespiti güvenilir
+        // yapıyor — teşhis koymaktan başka bir işi yok; /fix ise yama üretmekle
+        // görevli olduğu için "yapamıyorum" demeye doğal olarak isteksiz.
+        if (analysis.Analyses.Count > 0 && analysis.Analyses.All(a => !a.Fixable))
+        {
+            _log.LogInformation(
+                "Analiz düzeltmenin koddan çıkarılamadığını bildirdi (fixable=false), /fix denenmiyor.");
+
+            return new FixOutcome(
+                FixStatus.NotAutomaticallyFixable,
+                analysis.Analyses[0].SuggestedFix,
+                [], 0);
+        }
+
         var editor = new WorkspaceEditor(workspaceRoot);
 
         var (files, rejected) = await CollectFilesAsync(editor, context, analysis);

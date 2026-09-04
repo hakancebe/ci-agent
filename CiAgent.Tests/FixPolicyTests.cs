@@ -134,6 +134,32 @@ public class FixPolicyTests
     }
 
     [Fact]
+    public void RejectPlaceholderEdit_BlocksCommentingOutTheLine()
+    {
+        // Canlıda 4. tur: literal uydurmak yerine satırı yorum yaptı. Ad metinsel
+        // olarak duruyor ama canlı koddan silinmiş — ilk sürüm tam bu yüzden
+        // atlamıştı.
+        var edit = Edit("src/A.cs",
+            "Console.WriteLine(tanimsizDegisken);",
+            "// Console.WriteLine(tanimsizDegisken);");
+
+        var reason = FixPolicy.RejectPlaceholderEdit(edit, Tanimsiz);
+
+        Assert.Contains("etkisizleştirilmiş", reason);
+    }
+
+    [Theory]
+    [InlineData("")]                              // satırı komple sil
+    [InlineData(";")]                             // gövdeyi boşalt
+    [InlineData("Console.WriteLine(null);")]      // literal benzeri anahtar kelime
+    public void RejectPlaceholderEdit_BlocksOtherWaysOfNeutralizingTheCode(string newText)
+    {
+        var edit = Edit("src/A.cs", "Console.WriteLine(tanimsizDegisken);", newText);
+
+        Assert.NotNull(FixPolicy.RejectPlaceholderEdit(edit, Tanimsiz));
+    }
+
+    [Fact]
     public void RejectPlaceholderEdit_AllowsTypoFix_BecauseNoLiteralIsIntroduced()
     {
         // Meşru CS0103 düzeltmesi: ad kayboluyor ama yerine literal değil,

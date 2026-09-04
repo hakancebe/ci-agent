@@ -62,6 +62,17 @@ public class LlmService
           hatayı gizler, düzeltmez. Bu durumda suggestedFix'te düzeltmenin koddan
           belirlenemediğini ve neyin bilinmesi gerektiğini yaz, confidence'ı düşür.
           Bu, yukarıdaki "genel tavsiye verme" kuralının istisnasıdır.
+        - fixable: doğru düzeltmenin GÖSTERİLEN koddan belirlenip belirlenemediği.
+          Bu alan confidence'tan FARKLI bir soruyu cevaplıyor: confidence teşhise
+          (hatanın nedeni ne) olan güvenin, fixable ise DÜZELTMENİN çıkarılabilir
+          olmasının ölçüsü. Teşhis kesin ama düzeltme belirsiz olabilir.
+          false yap: değişkenin/alanın ne olması gerektiği bilinmiyorsa, iş
+          mantığı bilgisi gerekiyorsa, ya da düzeltmek için görmediğin bir dosya
+          gerekiyorsa. true yap: yazım hatası, eksik ayraç, yanlış tip, eksik
+          using gibi düzeltmesi koddan doğrudan okunabilen hatalarda.
+          fixable=false demek "bu hata otomatik düzeltilemez, insan bakmalı"
+          demektir ve otomatik düzeltme denemesini TAMAMEN durdurur — yanlış bir
+          düzeltmenin commit'lenmesindense durması yeğdir.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
@@ -81,9 +92,10 @@ public class LlmService
                   "suggestedFix": { "type": "string" },
                   "confidence":   { "type": "string", "enum": ["high", "medium", "low"] },
                   "affectedFile": { "type": ["string", "null"] },
-                  "affectedLine": { "type": ["integer", "null"] }
+                  "affectedLine": { "type": ["integer", "null"] },
+                  "fixable":      { "type": "boolean" }
                 },
-                "required": ["title", "rootCause", "suggestedFix", "confidence", "affectedFile", "affectedLine"],
+                "required": ["title", "rootCause", "suggestedFix", "confidence", "affectedFile", "affectedLine", "fixable"],
                 "additionalProperties": false
               }
             }
