@@ -67,9 +67,18 @@ public static class FixReport
         var (explanation, advice) = outcome.Status switch
         {
             FixStatus.NoSourceFiles => (
-                "Hata belirli bir kaynak dosyaya bağlanamadı, dolayısıyla düzenlenecek bir yer yok.",
-                "Bu genelde derleme/test dışı hatalarda olur (paket restore, deploy, ortam sorunu). "
-                + "Analiz yorumundaki kök nedene bakın."),
+                "Hata belirli bir kaynak dosyaya bağlanamadı ya da işaret edilen dosya "
+                + "çalışma dizininde bulunamadı, dolayısıyla düzenlenecek bir yer yok.",
+                "Konumu olmayan hatalarda (paket restore, deploy, ortam sorunu) beklenen sonuç. "
+                + "Analiz yorumunda bir dosya:satır varsa yolun repo kökünden itibaren doğru "
+                + "verildiğini kontrol edin; kalan durumlarda hatayı elle inceleyin."),
+
+            FixStatus.FilesRejected => (
+                "Hatanın işaret ettiği dosyaların tümü `/fix`'in düzenleme politikası dışında; "
+                + "**hiçbir değişiklik yapılmadı**.",
+                "Test dosyaları (`*Tests.cs`, `tests/` altı) ve `.github/` altı bilerek korunuyor. "
+                + "Düzeltmeyi elle yapın; dosya gerçekten bir test değilse adını veya bulunduğu "
+                + "dizini gözden geçirin."),
 
             FixStatus.NoProposal => (
                 "Model, verilen bilgiyle güvenli bir düzeltme öneremedi.",
@@ -96,6 +105,14 @@ public static class FixReport
         if (!string.IsNullOrWhiteSpace(outcome.Summary))
         {
             sb.AppendLine($"**Modelin açıklaması:** {outcome.Summary}");
+            sb.AppendLine();
+        }
+
+        if (outcome.RejectedPaths is { Count: > 0 } rejectedPaths)
+        {
+            sb.AppendLine("**Politika dışı bırakılan dosyalar:**");
+            foreach (var r in rejectedPaths)
+                sb.AppendLine($"- `{r.Path}` — {r.Reason}");
             sb.AppendLine();
         }
 

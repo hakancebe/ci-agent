@@ -8,8 +8,15 @@ public enum FixStatus
     /// <summary>Değişiklik uygulandı ve doğrulama (build + test) geçti.</summary>
     Fixed,
 
-    /// <summary>Analizden düzenlenebilir bir kaynak dosya çıkmadı.</summary>
+    /// <summary>Analizden hiç dosya:satır konumu çıkmadı ya da işaret edilen dosya
+    /// çalışma dizininde bulunamadı — düzenlenecek bir yer yok.</summary>
     NoSourceFiles,
+
+    /// <summary>Hatanın işaret ettiği dosyaların hepsi düzenleme politikasına
+    /// takıldı (test dosyası, <c>.github/</c> altı, .cs olmayan). Dosya vardı ama
+    /// dokunulması bilerek engellendi — bu <see cref="NoSourceFiles"/>'dan farklı,
+    /// kullanıcıya "altyapı sorunu" değil "bu dosya kapsam dışı" denmeli.</summary>
+    FilesRejected,
 
     /// <summary>LLM güvenli bir düzeltme öneremedi (boş öneri ya da prompt sığmadı).</summary>
     NoProposal,
@@ -26,12 +33,20 @@ public sealed record FixOutcome(
     string Summary,
     IReadOnlyList<EditOutcome> Edits,
     int Attempts,
-    string? VerificationOutput = null)
+    string? VerificationOutput = null,
+    IReadOnlyList<RejectedPath>? RejectedPaths = null)
 {
     public bool Succeeded => Status == FixStatus.Fixed;
 
     public IEnumerable<CodeEdit> AppliedEdits => Edits.Where(e => e.Applied).Select(e => e.Edit);
 }
+
+/// <summary>
+/// Analizin işaret ettiği ama <see cref="FixPolicy.RejectPath"/> tarafından
+/// düzenlemeye kapatılan bir aday dosya. Rapor yorumunda kullanıcıya hangi
+/// dosyanın neden atlandığını göstermek için taşınıyor.
+/// </summary>
+public sealed record RejectedPath(string Path, string Reason);
 
 /// <summary>
 /// /fix akışı: ilgili dosyaları oku → LLM'den değişiklik iste → uygula →
@@ -74,13 +89,23 @@ public sealed class FixPipeline
     {
         var editor = new WorkspaceEditor(workspaceRoot);
 
-        var files = await CollectFilesAsync(editor, context, analysis);
+        var (files, rejected) = await CollectFilesAsync(editor, context, analysis);
         if (files.Count == 0)
         {
+            // Aday dosya vardı ama hepsi POLİTİKAYA takıldıysa bu ayrı bir durum:
+            // kullanıcı "kaynak dosya bulunamadı, muhtemelen restore/deploy sorunu"
+            // değil, "şu dosyaya dokunmam yasak" mesajını görmeli.
+            if (rejected.Count > 0)
+                return new FixOutcome(
+                    FixStatus.FilesRejected,
+                    "Hatanın işaret ettiği dosyaların tümü düzenleme politikası dışında.",
+                    [], 0, RejectedPaths: rejected);
+
             return new FixOutcome(
                 FixStatus.NoSourceFiles,
                 "Analizden düzenlenebilir bir kaynak dosya çıkmadı "
-                + "(hata bir dosya:satır konumuna bağlanamamış ya da dosyalar düzenleme kuralları dışında).",
+                + "(hata bir dosya:satır konumuna bağlanamadı ya da işaret edilen dosya "
+                + "çalışma dizininde bulunamadı).",
                 [], 0);
         }
 
@@ -212,9 +237,11 @@ public sealed class FixPipeline
     /// <summary>
     /// Analizin işaret ettiği dosyaları toplar. Modele YALNIZCA bunlar gösteriliyor;
     /// görmediği bir dosyayı düzenlemesi zaten politika tarafından reddedilir.
+    /// Politika gereği atlanan dosyalar ayrıca döner ki çağıran "hiç dosya yok" ile
+    /// "dosya vardı ama dokunulması yasak" durumlarını ayırabilsin.
     /// </summary>
-    private async Task<Dictionary<string, string>> CollectFilesAsync(
-        WorkspaceEditor editor, ErrorContext context, AnalysisResult analysis)
+    private async Task<(Dictionary<string, string> Files, IReadOnlyList<RejectedPath> Rejected)>
+        CollectFilesAsync(WorkspaceEditor editor, ErrorContext context, AnalysisResult analysis)
     {
         // Öncelik LLM'in "etkilenen dosya" dediğinde; sonra parser'ın bulduğu konumlar.
         var candidates = analysis.Analyses
@@ -225,6 +252,7 @@ public sealed class FixPipeline
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
         var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var rejected = new List<RejectedPath>();
         var totalChars = 0;
 
         foreach (var path in candidates)
@@ -234,6 +262,7 @@ public sealed class FixPipeline
             if (FixPolicy.RejectPath(path) is string reason)
             {
                 _log.LogInformation("Dosya atlandı ({Path}): {Reason}", path, reason);
+                rejected.Add(new RejectedPath(path, reason));
                 continue;
             }
 
@@ -254,6 +283,6 @@ public sealed class FixPipeline
             totalChars += content.Length;
         }
 
-        return files;
+        return (files, rejected);
     }
 }

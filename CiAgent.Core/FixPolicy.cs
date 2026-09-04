@@ -61,8 +61,12 @@ public static class FixPolicy
     {
         var fileName = segments.Length > 0 ? segments[^1] : normalized;
 
-        if (fileName.EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase) ||
-            fileName.EndsWith("Test.cs", StringComparison.OrdinalIgnoreCase))
+        // "FooTests.cs" / "FooTest.cs" bir test dosyasıdır; ama dosya adının TAMAMI
+        // "Tests.cs" / "Test.cs" ise (önünde ad yok) bu sıradan bir kaynak dosyası
+        // olabilir - src/Core/Tests.cs gibi. Bunu isimden test sayıp /fix'i komple
+        // durdurmak yanlış pozitif üretiyordu; dizin sinyali (aşağıda) zaten daha
+        // güçlü ve gerçek test projelerini yakalıyor.
+        if (HasNamePrefixBefore(fileName, "Tests.cs") || HasNamePrefixBefore(fileName, "Test.cs"))
             return true;
 
         // Dizin adında "Tests"/"Test" geçen her şey (CiAgent.Tests/, test/, src/Test/)
@@ -72,6 +76,15 @@ public static class FixPolicy
             s.EndsWith(".Tests", StringComparison.OrdinalIgnoreCase) ||
             s.EndsWith(".Test", StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// <paramref name="fileName"/> <paramref name="suffix"/> ile bitiyor mu VE
+    /// suffix'ten önce en az bir karakter ad var mı? ("FooTests.cs" evet,
+    /// "Tests.cs" hayır.)
+    /// </summary>
+    private static bool HasNamePrefixBefore(string fileName, string suffix) =>
+        fileName.Length > suffix.Length
+        && fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Değişikliğin içeriği kabul edilebilir mi? Sebep döner, sorun yoksa null.</summary>
     public static string? RejectEdit(CodeEdit edit)

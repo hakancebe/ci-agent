@@ -243,6 +243,28 @@ public sealed class FixPipelineTests : IDisposable
         Assert.Equal(0, llm.CallCount);   // LLM'e hiç gidilmedi, para harcanmadı
     }
 
+    [Fact]
+    public async Task RunAsync_ReportsFilesRejected_WhenEveryCandidateIsPolicyBlocked()
+    {
+        // Hata gerçek bir test dosyasında: konum VAR, dosya diskte VAR, ama /fix'in
+        // dokunması yasak. Bu "dosya yok"tan farklı bir durum - NoSourceFiles değil
+        // FilesRejected dönmeli ki yorum "restore/deploy sorunu" demesin.
+        WriteFile("CiAgent.Tests/CalcTests.cs", "Assert.Equal(5, sum);");
+
+        var context = Context(file: "CiAgent.Tests/CalcTests.cs", line: 3);
+        var analysis = Analysis(affectedFile: "CiAgent.Tests/CalcTests.cs");
+        var llm = new ScriptedLlm();
+        var verifier = new ScriptedVerifier();
+
+        var outcome = await new FixPipeline(llm, verifier).RunAsync(context, analysis, _root);
+
+        Assert.Equal(FixStatus.FilesRejected, outcome.Status);
+        Assert.Equal(0, llm.CallCount);      // politikaya takıldı, LLM'e hiç gidilmedi
+        var rejected = Assert.Single(outcome.RejectedPaths!);
+        Assert.Equal("CiAgent.Tests/CalcTests.cs", rejected.Path);
+        Assert.Contains("test", rejected.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
     // --- Dry-run ----------------------------------------------------------
 
     [Fact]
