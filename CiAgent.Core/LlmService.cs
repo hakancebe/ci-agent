@@ -322,6 +322,13 @@ public class LlmService
         - Sadece verilen dosya içeriklerine dayan. Görmediğin bir dosyayı düzenleme.
         - Hatayı verilen bilgiyle güvenle düzeltemiyorsan edits listesini BOŞ bırak
           ve summary'de nedenini yaz. Uydurma bir değişiklik yapmaktan iyidir.
+        - Kodda dayanağı olmayan bir değer, değişken adı ya da string/sayı literali
+          UYDURMA. Sadece derleme geçsin diye yer tutucu (ör. tanımsız bir
+          değişkeni Console.WriteLine("örnek metin") ile değiştirmek) koyma — bu
+          düzeltme değil, hatayı gizlemektir. Böyle bir durumda edits'i boş bırak.
+        - CS0103 (tanımsız ad): ad, kapsamdaki mevcut bir ada açıkça benziyorsa
+          (yazım hatası, tek harf farkı) onu düzelt. Benzeyen hiçbir şey yoksa
+          hata mekanik olarak düzeltilemez — boş dön.
         - Türkçe cevap ver (kod hariç).
         """;
 
