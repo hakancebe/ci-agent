@@ -239,6 +239,17 @@ public class ReportService
             sb.AppendLine("**🛠️ Önerilen Çözüm**");
             sb.AppendLine(a.SuggestedFix);
 
+            // fixable=false ise bunu BURADA söylüyoruz: bilgi zaten üretiliyordu
+            // ama yalnızca /fix çalıştırıldığında ortaya çıkıyordu. Okuyucu boşuna
+            // /fix yazmadan önce bilmeli. Güven düzeyinden ayrı bir bilgi:
+            // teşhis kesin olabilir (🟢) ama düzeltme yine de çıkarılamayabilir.
+            if (!a.Fixable)
+            {
+                sb.AppendLine();
+                sb.AppendLine("> 🔒 **Otomatik düzeltilemez** — doğru düzeltme koddan "
+                            + "belirlenemiyor, `/fix` bu hatayı denemez. Elle bakılması gerekiyor.");
+            }
+
             if (!string.IsNullOrWhiteSpace(a.AffectedFile))
             {
                 sb.AppendLine();
@@ -390,6 +401,10 @@ public class ReportService
             sb.AppendLine($"**{heading}** ({ConfidenceBadge(a.Confidence)}): {a.RootCause}");
             sb.AppendLine();
             sb.AppendLine($"**Önerilen Çözüm:** {a.SuggestedFix}");
+
+            if (!a.Fixable)
+                sb.AppendLine("> 🔒 **Otomatik düzeltilemez** — `/fix` bu hatayı denemez.");
+
             sb.AppendLine();
         }
 

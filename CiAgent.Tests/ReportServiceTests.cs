@@ -74,6 +74,61 @@ public class ReportServiceTests
     // Saf markdown/marker mantığı — GitHub'a hiç dokunmuyor.
     // ---------------------------------------------------------------
 
+    private static AnalysisResult NotFixableResult() => new()
+    {
+        Summary = "Tanımsız değişken.",
+        Analyses =
+        {
+            new Analysis
+            {
+                Title = "Tanımsız ad",
+                RootCause = "'tanimsizDegisken' kapsamda yok.",
+                SuggestedFix = "Bu değişkenin ne olması gerektiği koddan çıkarılamıyor.",
+                Confidence = "high",   // teşhis kesin, düzeltme belirsiz
+                Fixable = false
+            }
+        }
+    };
+
+    [Fact]
+    public void BuildCommentBody_OtomatikDuzeltilemezRozetiniGosterir()
+    {
+        // Bilgi zaten üretiliyordu ama yalnızca /fix çalıştırılınca ortaya
+        // çıkıyordu; okuyucu boşuna /fix yazmadan önce bilmeli.
+        var body = ReportService.BuildCommentBody(NotFixableResult(), SampleContext(), runId: 1);
+
+        Assert.Contains("Otomatik düzeltilemez", body);
+        Assert.Contains("/fix", body);
+    }
+
+    [Fact]
+    public void BuildCommentBody_FixableAnalizdeRozetGostermez()
+    {
+        var body = ReportService.BuildCommentBody(SampleResult(), SampleContext(), runId: 1);
+
+        Assert.DoesNotContain("Otomatik düzeltilemez", body);
+    }
+
+    [Fact]
+    public void BuildCommentBody_RozetGuvenDuzeyindenBagimsizdir()
+    {
+        // fixable, confidence'tan FARKLI bir soruyu cevaplıyor: teşhis kesin
+        // (high) olsa bile düzeltme çıkarılamayabilir. İkisi karıştırılmamalı.
+        var body = ReportService.BuildCommentBody(NotFixableResult(), SampleContext(), runId: 1);
+
+        Assert.Contains("🟢", body);                    // güven yüksek
+        Assert.Contains("Otomatik düzeltilemez", body); // ama düzeltilemez
+    }
+
+    [Fact]
+    public void BuildJobSummaryBody_OtomatikDuzeltilemezRozetiniGosterir()
+    {
+        var body = ReportService.BuildJobSummaryBody(
+            NotFixableResult(), SampleContext(), postedToGitHub: true);
+
+        Assert.Contains("Otomatik düzeltilemez", body);
+    }
+
     [Fact]
     public void BuildMarker_RunIdiIcerenGizliHtmlYorumuUretir()
     {
