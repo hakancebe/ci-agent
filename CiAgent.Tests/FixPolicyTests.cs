@@ -100,4 +100,76 @@ public class FixPolicyTests
     {
         Assert.Null(FixPolicy.RejectEdit(Edit("src/Calc.cs", "return a - b;", "return a + b;")));
     }
+
+    // --- Yer tutucu koruması (CS0103) -------------------------------------
+
+    private static readonly string[] Tanimsiz = ["tanimsizDegisken"];
+
+    [Fact]
+    public void UndefinedNamesFrom_ExtractsNameFromCompilerMessage()
+    {
+        var names = FixPolicy.UndefinedNamesFrom([
+            "CS0103: The name 'tanimsizDegisken' does not exist in the current context",
+            "CS0029: Cannot implicitly convert type 'string' to 'int'"
+        ]);
+
+        Assert.Equal(["tanimsizDegisken"], names);
+    }
+
+    [Theory]
+    // Canlıda üç turda çıkan üç varyant: hepsi derlenir, hepsi testleri geçer,
+    // hiçbiri hatayı düzeltmez.
+    [InlineData("Console.WriteLine(\"örnek metin\");")]
+    [InlineData("Console.WriteLine(\"Bir değer\");")]
+    [InlineData("Console.WriteLine(\"\");")]
+    [InlineData("Console.WriteLine(42);")]
+    public void RejectPlaceholderEdit_BlocksLiteralSubstitution(string newText)
+    {
+        var edit = Edit("src/A.cs", "Console.WriteLine(tanimsizDegisken);", newText);
+
+        var reason = FixPolicy.RejectPlaceholderEdit(edit, Tanimsiz);
+
+        Assert.Contains("tanimsizDegisken", reason);
+        Assert.Contains("gizler", reason);
+    }
+
+    [Fact]
+    public void RejectPlaceholderEdit_AllowsTypoFix_BecauseNoLiteralIsIntroduced()
+    {
+        // Meşru CS0103 düzeltmesi: ad kayboluyor ama yerine literal değil,
+        // kapsamdaki başka bir AD geliyor. Engellenmemeli.
+        var edit = Edit("src/A.cs", "return a + bbb;", "return a + b;");
+
+        Assert.Null(FixPolicy.RejectPlaceholderEdit(edit, ["bbb"]));
+    }
+
+    [Fact]
+    public void RejectPlaceholderEdit_AllowsDeclaringTheMissingName()
+    {
+        // Adı gerçekten TANIMLAYAN düzeltme: ad newText'te duruyor, yani
+        // literal içerse bile yer tutucu değil.
+        var edit = Edit("src/A.cs",
+            "Console.WriteLine(tanimsizDegisken);",
+            "string tanimsizDegisken = \"örnek\";\nConsole.WriteLine(tanimsizDegisken);");
+
+        Assert.Null(FixPolicy.RejectPlaceholderEdit(edit, Tanimsiz));
+    }
+
+    [Fact]
+    public void RejectPlaceholderEdit_IgnoresEditsUnrelatedToTheUndefinedName()
+    {
+        var edit = Edit("src/A.cs", "return a - b;", "return a + b;");
+
+        Assert.Null(FixPolicy.RejectPlaceholderEdit(edit, Tanimsiz));
+    }
+
+    [Fact]
+    public void RejectPlaceholderEdit_DoesNotMatchNameInsideLongerIdentifier()
+    {
+        // 'bbb' adı tanımsız olsa da buradaki 'abbbc' başka bir tanımlayıcı;
+        // bu edit o adı ilgilendirmiyor.
+        var edit = Edit("src/A.cs", "return abbbc;", "return \"x\";");
+
+        Assert.Null(FixPolicy.RejectPlaceholderEdit(edit, ["bbb"]));
+    }
 }

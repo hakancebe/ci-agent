@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace CiAgent.Core;
 
 /// <summary>
@@ -85,6 +87,96 @@ public static class FixPolicy
     private static bool HasNamePrefixBefore(string fileName, string suffix) =>
         fileName.Length > suffix.Length
         && fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
+
+    // --- Yer tutucu (placeholder) koruması --------------------------------
+    //
+    // Gözlenen davranış: tanımsız bir ada (CS0103) rastlayan model, değeri
+    // koddan çıkaramadığında BOŞ dönmek yerine derlemeyi geçirecek bir literal
+    // uyduruyor. Üç canlı denemede üç farklı varyant çıktı:
+    //   Console.WriteLine(tanimsizDegisken)  ->  Console.WriteLine("örnek metin")
+    //                                        ->  Console.WriteLine("Bir değer")
+    //                                        ->  Console.WriteLine("")
+    // Üçü de derlenir, üçü de testleri geçer (satırın teste etkisi yok) ve üçü
+    // de hatayı DÜZELTMEZ, gizler. Prompt'la üç kez engellenmeye çalışıldı,
+    // tutmadı: görevin çerçevesi "CI'ı yeşile döndür" olduğu sürece model
+    // derlenen bir yol buluyor. Bu yüzden kural artık burada, olasılığa bağlı
+    // olmayan bir yerde.
+
+    /// <summary>CS0103 mesajlarından tanımsız ad(lar)ı çıkarır.</summary>
+    private static readonly Regex UndefinedNamePattern =
+        new(@"CS0103[^']*'([^']+)'", RegexOptions.Compiled);
+
+    /// <summary>
+    /// String/char/sayı literalleri. Yer tutucu tespitinde "yeni literal geldi mi"
+    /// sorusunu cevaplamak için kullanılıyor.
+    /// </summary>
+    private static readonly Regex LiteralPattern =
+        new("\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|\\b\\d+(?:\\.\\d+)?\\b",
+            RegexOptions.Compiled);
+
+    /// <summary>
+    /// Hata mesajlarında geçen CS0103 tanımsız adlarını toplar.
+    /// </summary>
+    public static IReadOnlyList<string> UndefinedNamesFrom(IEnumerable<string> messages) =>
+        messages
+            .SelectMany(m => UndefinedNamePattern.Matches(m).Select(x => x.Groups[1].Value))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// Bu değişiklik, tanımsız bir adı "yerine literal koyarak" ortadan
+    /// kaldırıyor mu? Sebep döner, sorun yoksa null.
+    ///
+    /// Ayırt edici bilinçli olarak dar: adın KAYBOLMASI tek başına yeterli değil,
+    /// çünkü meşru yazım hatası düzeltmesi de adı kaldırır (a + bbb -> a + b).
+    /// Reddedilen şey, adın yerine kodda dayanağı olmayan bir LİTERAL gelmesi.
+    /// Adı gerçekten tanımlayan bir düzeltme (string x = ...; ... x ...) adı
+    /// koruduğu için buradan geçer.
+    /// </summary>
+    public static string? RejectPlaceholderEdit(
+        CodeEdit edit, IReadOnlyCollection<string> undefinedNames)
+    {
+        foreach (var name in undefinedNames)
+        {
+            // Bu edit o adı hiç ilgilendirmiyorsa konumuz değil.
+            if (!ContainsIdentifier(edit.OldText, name))
+                continue;
+
+            // Ad yeni metinde hâlâ duruyorsa sorun yok: ya tanımlanmış ya da
+            // o satıra dokunulmamış.
+            if (ContainsIdentifier(edit.NewText, name))
+                continue;
+
+            var introduced = IntroducedLiterals(edit.OldText, edit.NewText);
+            if (introduced.Count > 0)
+            {
+                return $"tanımsız '{name}' adı, kodda dayanağı olmayan bir literal "
+                     + $"({string.Join(", ", introduced)}) ile değiştirilmiş — bu hatayı "
+                     + "düzeltmez, gizler. Adın ne olması gerektiği koddan çıkarılamıyorsa "
+                     + "edits'i BOŞ bırak.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Ad, metinde tam bir tanımlayıcı olarak geçiyor mu? (abbbc içindeki bbb sayılmaz.)</summary>
+    private static bool ContainsIdentifier(string text, string name) =>
+        Regex.IsMatch(text, $@"(?<![A-Za-z0-9_]){Regex.Escape(name)}(?![A-Za-z0-9_])");
+
+    /// <summary>
+    /// newText'te olup oldText'te olmayan literaller. Çokluk korunuyor: aynı
+    /// literal eskide bir, yenide iki kez geçiyorsa biri yenidir.
+    /// </summary>
+    private static List<string> IntroducedLiterals(string oldText, string newText)
+    {
+        var introduced = LiteralPattern.Matches(newText).Select(m => m.Value).ToList();
+
+        foreach (var existing in LiteralPattern.Matches(oldText).Select(m => m.Value))
+            introduced.Remove(existing);
+
+        return introduced;
+    }
 
     /// <summary>Değişikliğin içeriği kabul edilebilir mi? Sebep döner, sorun yoksa null.</summary>
     public static string? RejectEdit(CodeEdit edit)
