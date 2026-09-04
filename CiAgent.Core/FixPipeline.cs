@@ -178,9 +178,23 @@ public sealed class FixPipeline
                 $"Öneri {proposal.Edits.Count} değişiklik içeriyor, sınır {FixPolicy.MaxEdits}. "
                 + "Bu kadar geniş bir değişiklik otomatik uygulanmamalı.", [], attempt);
 
+        // Tanımsız ad (CS0103) varsa, modelin o adı bir literalle "yok etmesi"
+        // diske yazılmadan önce burada eleniyor. Sonuç EditsRejected olduğu için
+        // retry döngüsü devreye giriyor ve DescribeFailure modele gerekçeyi
+        // aynen söylüyor — soyut bir prompt maddesinden çok daha bağlayıcı.
+        var undefinedNames = FixPolicy.UndefinedNamesFrom(
+            context.Failures.Select(f => f.Message));
+
         var outcomes = new List<EditOutcome>();
         foreach (var edit in proposal.Edits)
         {
+            if (FixPolicy.RejectPlaceholderEdit(edit, undefinedNames) is string placeholder)
+            {
+                _log.LogWarning("Değişiklik reddedildi ({File}): {Reason}", edit.File, placeholder);
+                outcomes.Add(EditOutcome.Rejected(edit, placeholder));
+                continue;
+            }
+
             var outcome = await editor.ApplyAsync(edit);
             outcomes.Add(outcome);
 

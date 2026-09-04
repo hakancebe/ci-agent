@@ -186,6 +186,43 @@ public sealed class FixPipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_RejectsPlaceholderEdit_AndNeverVerifies()
+    {
+        // Canlıda üç turda üç kez görülen davranış: tanımsız adı bir literalle
+        // yok edip "düzeltildi" demek. Diske hiç yazılmamalı.
+        const string original = "Console.WriteLine(tanimsizDegisken);";
+        var path = WriteFile("src/Calc.cs", original);
+
+        var context = new ErrorContext
+        {
+            JobName = "build", FailedStepName = "Build",
+            Failures =
+            {
+                new Failure
+                {
+                    Kind = FailureKind.Compiler, JobName = "build", StepName = "Build",
+                    FilePath = "src/Calc.cs", LineNumber = 1,
+                    Message = "CS0103: The name 'tanimsizDegisken' does not exist in the current context"
+                }
+            }
+        };
+
+        var llm = new ScriptedLlm(
+            Proposal("yer tutucu", ("src/Calc.cs", original, "Console.WriteLine(\"\");")),
+            Proposal("yine yer tutucu", ("src/Calc.cs", original, "Console.WriteLine(\"x\");")));
+        var verifier = new ScriptedVerifier();
+
+        var outcome = await new FixPipeline(llm, verifier).RunAsync(context, Analysis(), _root);
+
+        Assert.Equal(FixStatus.EditsRejected, outcome.Status);
+        Assert.Equal(0, verifier.CallCount);                        // doğrulamaya hiç geçilmedi
+        Assert.Equal(original, await File.ReadAllTextAsync(path));  // dosya el değmemiş
+
+        // Asıl mekanizma: model İKİNCİ denemede gerekçeyi görüyor.
+        Assert.Contains("gizler", llm.Prompts[1]);
+    }
+
+    [Fact]
     public async Task RunAsync_DoesNotApplyPartially_WhenOneEditOfSeveralFails()
     {
         // Bir kısmı tutup diğeri tutmazsa modelin öngörmediği bir ara durum oluşur.
