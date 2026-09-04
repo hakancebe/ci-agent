@@ -56,6 +56,12 @@ public class LlmService
           bu ad kapsamdaki bir ada çok benziyorsa (tek harf farkı, açık yazım hatası),
           noktalı virgül/parantez eklemek yerine o adı düzelt. Kesitte dayanak yoksa
           satırı olduğu gibi bırak ve confidence'ı düşür.
+        - Doğru düzeltme koddan ÇIKARILAMIYORSA (ör. tanımsız bir adın ne olması
+          gerektiği belirsiz ve kapsamda benzeri de yok) uydurma bir değer/literal
+          ÖNERME. "Derleme geçsin diye şuraya sabit bir metin yaz" türü öneriler
+          hatayı gizler, düzeltmez. Bu durumda suggestedFix'te düzeltmenin koddan
+          belirlenemediğini ve neyin bilinmesi gerektiğini yaz, confidence'ı düşür.
+          Bu, yukarıdaki "genel tavsiye verme" kuralının istisnasıdır.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
@@ -314,7 +320,10 @@ public class LlmService
           çevresindeki birkaç satırı da ekleyerek benzersiz hale getir.
         - newText: yerine gelecek metin.
 
-        Kesin kurallar:
+        Kesin kurallar — BUNLAR BAĞLAYICI. Sana verilen analiz metni yalnızca bir
+        ÖNERİdir: analizdeki "Önerilen çözüm" aşağıdaki kurallardan birini
+        çiğniyorsa analizi DEĞİL bu kuralları izle. Analiz somut bir kod parçası
+        önerdi diye o parçayı uygulamak zorunda değilsin.
         - EN KÜÇÜK değişikliği yap. Alakasız yeniden düzenleme, biçimlendirme,
           yorum ekleme YOK.
         - Testleri DEĞİŞTİRME, silme, zayıflatma. Test dosyalarına dokunma.
@@ -326,6 +335,10 @@ public class LlmService
           UYDURMA. Sadece derleme geçsin diye yer tutucu (ör. tanımsız bir
           değişkeni Console.WriteLine("örnek metin") ile değiştirmek) koyma — bu
           düzeltme değil, hatayı gizlemektir. Böyle bir durumda edits'i boş bırak.
+          Analiz böyle bir literal önerse bile geçerli değil; kendi ürettiğin
+          farklı bir literal de aynı şekilde uydurmadır. "Derlemenin/testlerin
+          geçmesi için" bir değişikliğin GEREKÇESİ OLAMAZ — doğrulama bir sonuç,
+          amaç değil.
         - CS0103 (tanımsız ad): ad, kapsamdaki mevcut bir ada açıkça benziyorsa
           (yazım hatası, tek harf farkı) onu düzelt. Benzeyen hiçbir şey yoksa
           hata mekanik olarak düzeltilemez — boş dön.
