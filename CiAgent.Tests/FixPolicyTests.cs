@@ -38,6 +38,10 @@ public class FixPolicyTests
     [InlineData("tests/Foo/BarTest.cs")]
     [InlineData("src/Test/Helper.cs")]
     [InlineData("MyProject.Tests/Support/Fixture.cs")]
+    // Adın önünde gerçek bir prefix varsa isim sinyali tek başına yeter,
+    // dizin test dizini olmasa bile.
+    [InlineData("src/Core/CalculatorTests.cs")]
+    [InlineData("src/Core/WidgetTest.cs")]
     public void RejectPath_BlocksTestFiles(string path)
     {
         Assert.Contains("test", FixPolicy.RejectPath(path), StringComparison.OrdinalIgnoreCase);
@@ -47,6 +51,11 @@ public class FixPolicyTests
     [InlineData("src/Calc.cs")]
     [InlineData("CiAgent.Core/LogParser.cs")]
     [InlineData("deep/nested/path/Service.cs")]
+    // Dosya adının TAMAMI "Tests.cs"/"Test.cs" ise (önünde ad yok) ve dizin de
+    // test dizini değilse bu sıradan bir kaynak dosyasıdır - isimden test sayıp
+    // /fix'i durdurmak yanlış pozitifti.
+    [InlineData("src/CiPilot.Core/Tests.cs")]
+    [InlineData("src/CiPilot.Core/Test.cs")]
     public void RejectPath_AllowsOrdinarySourceFiles(string path)
     {
         Assert.Null(FixPolicy.RejectPath(path));

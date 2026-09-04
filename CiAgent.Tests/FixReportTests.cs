@@ -90,6 +90,30 @@ public class FixReportTests
     }
 
     [Fact]
+    public void BuildBody_NamesBlockedFilesAndSaysNothingChanged_OnFilesRejected()
+    {
+        // En önemli fark: bu "altyapı sorunu" değil "bu dosyaya dokunamam".
+        // Kullanıcı hangi dosyanın neden atlandığını görmeli, "restore" tavsiyesini
+        // DEĞİL.
+        var outcome = new FixOutcome(
+            FixStatus.FilesRejected,
+            "Hatanın işaret ettiği dosyaların tümü düzenleme politikası dışında.",
+            [], 0,
+            RejectedPaths: [new RejectedPath(
+                "src/CiPilot.Core/Tests.cs",
+                "test dosyaları düzenlenemez: 'src/CiPilot.Core/Tests.cs'")]);
+
+        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+
+        Assert.Contains("otomatik düzeltemedi", body);
+        Assert.Contains("Politika dışı bırakılan dosyalar", body);
+        Assert.Contains("src/CiPilot.Core/Tests.cs", body);
+        Assert.Contains("hiçbir değişiklik yapılmadı", body);
+        Assert.DoesNotContain("restore", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("✅", body);
+    }
+
+    [Fact]
     public void BuildBody_MentionsRetry_WhenSecondAttemptSucceeded()
     {
         var outcome = new FixOutcome(FixStatus.Fixed, "düzeltildi", [Applied()], 2);
