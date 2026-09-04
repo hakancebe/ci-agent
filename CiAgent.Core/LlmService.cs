@@ -50,6 +50,12 @@ public class LlmService
         - suggestedFix somut ve uygulanabilir olsun (hangi dosyada ne değişecek).
         - Kod kesiti verilmişse (>> işaretli satır), suggestedFix'te bu satıra somut ve
           uygulanabilir bir değişiklik öner, genel tavsiye verme.
+        - Derleme hatası için düzeltme önerirken derleyicinin harfi harfine şikayetini
+          gidermek yetmez; önerdiğin satır, kesitte GÖRÜNEN tanımlara göre de anlamlı
+          olmalı. İşaretli satır kesitte tanımlı olmayan bir ada atıfta bulunuyorsa ve
+          bu ad kapsamdaki bir ada çok benziyorsa (tek harf farkı, açık yazım hatası),
+          noktalı virgül/parantez eklemek yerine o adı düzelt. Kesitte dayanak yoksa
+          satırı olduğu gibi bırak ve confidence'ı düşür.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
