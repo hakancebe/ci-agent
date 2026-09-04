@@ -148,6 +148,18 @@ public class FixPolicyTests
         Assert.Contains("etkisizleştirilmiş", reason);
     }
 
+    [Fact]
+    public void RejectPlaceholderEdit_BlocksNameHiddenInsideStringLiteral()
+    {
+        // Canlıda 5. varyant: adı string literalinin İÇİNE koymak. Ad metinde
+        // hâlâ geçiyor ama artık kod değil, veri — yorum satırı vakasının aynısı.
+        var edit = Edit("src/A.cs",
+            "Console.WriteLine(tanimsizDegisken);",
+            "Console.WriteLine(\"tanimsizDegisken\");");
+
+        Assert.NotNull(FixPolicy.RejectPlaceholderEdit(edit, Tanimsiz));
+    }
+
     [Theory]
     [InlineData("")]                              // satırı komple sil
     [InlineData(";")]                             // gövdeyi boşalt
