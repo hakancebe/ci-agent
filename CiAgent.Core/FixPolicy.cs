@@ -144,24 +144,32 @@ public static class FixPolicy
     public static string? RejectPlaceholderEdit(
         CodeEdit edit, IReadOnlyCollection<string> undefinedNames)
     {
-        var oldLive = StripComments(edit.OldText);
-        var newLive = StripComments(edit.NewText);
+        // İki ayrı görünüm gerekiyor:
+        //   *NoComments — literaller DURUYOR; "yeni literal geldi mi" sorusu için.
+        //   *Code       — literal İÇERİKLERİ de boşaltılmış; "ad hâlâ ÇALIŞAN kodda
+        //                 mı" sorusu için. Console.WriteLine("tanimsizDegisken")
+        //                 örneğinde ad metinde geçiyor ama artık kod değil VERİ —
+        //                 bu ayrım yapılmazsa yer tutucu tespitten kaçıyor.
+        var oldNoComments = StripComments(edit.OldText);
+        var newNoComments = StripComments(edit.NewText);
+        var oldCode = StripLiteralContents(oldNoComments);
+        var newCode = StripLiteralContents(newNoComments);
 
         foreach (var name in undefinedNames)
         {
             // Bu edit o adı hiç ilgilendirmiyorsa konumuz değil.
-            if (!ContainsIdentifier(oldLive, name))
+            if (!ContainsIdentifier(oldCode, name))
                 continue;
 
             // Ad canlı kodda hâlâ duruyorsa: ya tanımlanmış ya da o satıra
             // dokunulmamış. İkisi de meşru; gerçekten düzelip düzelmediğine
             // doğrulama (derleme + test) karar verir.
-            if (ContainsIdentifier(newLive, name))
+            if (ContainsIdentifier(newCode, name))
                 continue;
 
             // Buradan sonrası tehlikeli bölge: ad CANLI KODDAN kayboldu, yani
             // değişiklik derlenecek ve "düzeltildi" gibi görünecek.
-            var literals = IntroducedLiterals(oldLive, newLive);
+            var literals = IntroducedLiterals(oldNoComments, newNoComments);
             if (literals.Count > 0)
             {
                 return $"tanımsız '{name}' adı, kodda dayanağı olmayan bir literal "
@@ -172,7 +180,7 @@ public static class FixPolicy
 
             // Literal yok ama yerine yeni bir AD da gelmediyse, kod düzeltilmedi:
             // yorum satırına alındı, silindi ya da başka bir yolla etkisizleştirildi.
-            if (IntroducedIdentifiers(oldLive, newLive).Count == 0)
+            if (IntroducedIdentifiers(oldCode, newCode).Count == 0)
             {
                 return $"tanımsız '{name}' adı düzeltilmemiş, kod etkisizleştirilmiş "
                      + "(yorum satırına alınmış, silinmiş ya da boşaltılmış) — bu hatayı "
@@ -194,6 +202,16 @@ public static class FixPolicy
     /// </summary>
     private static string StripComments(string text) =>
         Regex.Replace(text, @"/\*.*?\*/|//[^\n]*", "", RegexOptions.Singleline);
+
+    /// <summary>
+    /// String/char literallerinin İÇERİĞİNİ boşaltır, tırnakları bırakır
+    /// ("tanimsizDegisken" -> ""). Böylece literal içine saklanmış bir ad,
+    /// "kodda hâlâ kullanılıyor" sayılmaz — literal içi kod değil, veridir.
+    /// </summary>
+    private static string StripLiteralContents(string text) =>
+        Regex.Replace(
+            Regex.Replace(text, "\"(?:[^\"\\\\]|\\\\.)*\"", "\"\""),
+            "'(?:[^'\\\\]|\\\\.)*'", "''");
 
     /// <summary>
     /// newText'te olup oldText'te olmayan tanımlayıcılar. Literal benzeri anahtar
