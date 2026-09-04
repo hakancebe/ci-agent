@@ -114,6 +114,21 @@ public class FixReportTests
     }
 
     [Fact]
+    public void BuildBody_SaysNothingWasAttempted_WhenAnalysisSaidNotFixable()
+    {
+        var outcome = new FixOutcome(
+            FixStatus.NotAutomaticallyFixable,
+            "Bu değişkenin ne olması gerektiği koddan çıkarılamıyor.", [], 0);
+
+        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+
+        Assert.Contains("otomatik düzeltemedi", body);
+        Assert.Contains("koddan belirlenemediğini", body);
+        Assert.Contains("hiç denenmedi", body);
+        Assert.DoesNotContain("✅", body);
+    }
+
+    [Fact]
     public void BuildBody_MentionsRetry_WhenSecondAttemptSucceeded()
     {
         var outcome = new FixOutcome(FixStatus.Fixed, "düzeltildi", [Applied()], 2);

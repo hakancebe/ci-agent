@@ -80,6 +80,13 @@ public static class FixReport
                 + "Düzeltmeyi elle yapın; dosya gerçekten bir test değilse adını veya bulunduğu "
                 + "dizini gözden geçirin."),
 
+            FixStatus.NotAutomaticallyFixable => (
+                "Analiz, doğru düzeltmenin **koddan belirlenemediğini** bildirdi; "
+                + "otomatik düzeltme hiç denenmedi.",
+                "Bu hata sınıfı (ör. ne olması gerektiği bilinmeyen bir değişken, iş "
+                + "mantığı gerektiren bir karar) insan bilgisi istiyor. Yanlış bir "
+                + "düzeltmenin commit'lenmesindense durmak tercih edildi."),
+
             FixStatus.NoProposal => (
                 "Model, verilen bilgiyle güvenli bir düzeltme öneremedi.",
                 "Uydurma bir değişiklik yapmaktansa bilerek durdu. Hatayı elle inceleyin."),
