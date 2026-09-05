@@ -45,6 +45,19 @@ public class CiAnalysisPipelineTests
             if (FileFetchException is not null) throw FileFetchException;
             return Task.FromResult(FilesByPath.TryGetValue(path, out var c) ? c : null);
         }
+
+        /// <summary>Repodaki yollar. Varsayılan: FilesByPath'in anahtarları.</summary>
+        public List<string>? RepoPaths { get; set; }
+        public Exception? TreeException { get; set; }
+        public int TreeCalls { get; private set; }
+
+        public Task<IReadOnlyList<string>> ListFilePathsAsync(string owner, string repo, string ref_)
+        {
+            TreeCalls++;
+            if (TreeException is not null) throw TreeException;
+            return Task.FromResult<IReadOnlyList<string>>(
+                RepoPaths ?? FilesByPath.Keys.ToList());
+        }
     }
 
     private sealed class FakeLlm : LlmService
@@ -250,6 +263,80 @@ public class CiAnalysisPipelineTests
         Assert.NotNull(failure.CodeSnippet);
         Assert.Contains(">> 12: satır 12;", failure.CodeSnippet);
         Assert.Equal(new[] { "src/Calc.cs" }, gateway.FileCalls);
+    }
+
+    // --- Test edilen kodu bağlama ekleme --------------------------------
+    // Canlıda görülen eksik: bir test patladığında hata konumu TEST dosyasını
+    // gösteriyor, dolayısıyla modele yalnızca test kodu gidiyor ve testin
+    // çağırdığı bozuk metot hiç görünmüyordu. Model de "göremediğim şey
+    // hakkında tahmin yürütmem" deyip düzeltmeyi reddediyordu.
+
+    [Fact]
+    public async Task RunAsync_AttachesImplementationSource_ForFailingTest()
+    {
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "build", "failure") },
+            LogsByJobId =
+            {
+                [10] = TestLog("CiPilot.Core.Tests.CalculatorTests.Add_ReturnsSum",
+                               "tests/CiPilot.Core.Tests/CalculatorTests.cs", 12)
+            },
+            FilesByPath =
+            {
+                ["tests/CiPilot.Core.Tests/CalculatorTests.cs"] = "Assert.Equal(4, calc.Add(2, 2));",
+                ["src/CiPilot.Core/Calculator.cs"] = "public int Add(int a, int b) => a - b;"
+            }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        // Asıl kazanç: bozuk metodun KENDİSİ artık bağlamda.
+        var (path, content) = Assert.Single(outcome.Context!.RelatedSources);
+        Assert.Equal("src/CiPilot.Core/Calculator.cs", path);
+        Assert.Contains("a - b", content);
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotLookForImplementation_WhenFailureIsNotATest()
+    {
+        // Derleme hatasında konum zaten bozuk dosyayı gösteriyor; ağaç çekmek
+        // gereksiz bir API çağrısı olurdu.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "build", "failure") },
+            LogsByJobId = { [10] = RestoreLog },
+            FilesByPath = { ["src/Core.csproj"] = "kod" }
+        };
+
+        await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Equal(0, gateway.TreeCalls);
+    }
+
+    [Fact]
+    public async Task RunAsync_ContinuesWithoutImplementation_WhenRepoTreeCannotBeRead()
+    {
+        // Zenginleştirme bir kolaylık, ön koşul değil: ağaç çekilemezse analiz
+        // eskisi gibi (eksik bağlamla) devam etmeli, patlamamalı.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "build", "failure") },
+            LogsByJobId =
+            {
+                [10] = TestLog("A.CalculatorTests.Add", "tests/CalculatorTests.cs", 3)
+            },
+            FilesByPath = { ["tests/CalculatorTests.cs"] = "test kodu" },
+            TreeException = new InvalidOperationException("ağaç yok")
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Equal(PipelineStatus.Reported, outcome.Status);
+        Assert.Empty(outcome.Context!.RelatedSources);
     }
 
     [Fact]

@@ -73,6 +73,9 @@ public class LlmService
           fixable=false demek "bu hata otomatik düzeltilemez, insan bakmalı"
           demektir ve otomatik düzeltme denemesini TAMAMEN durdurur — yanlış bir
           düzeltmenin commit'lenmesindense durması yeğdir.
+        - Patlayan bir testte "Test edilen kod" bölümü verilmişse, hata neredeyse
+          her zaman ORADADIR, testte değil. affectedFile'ı o dosya yap ve
+          düzeltmeyi orada öner. Testin beklentisini değiştirmeyi ÖNERME.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
@@ -568,6 +571,22 @@ public class LlmService
         //
         // Grup temsilcisinin kesiti yeterli: aynı gruptaki failure'lar zaten aynı
         // dosya:satır'da, kesitleri de birebir aynı olurdu.
+        // Test edilen uygulama kodu. Kod kesitlerinden AYRI tutuluyor çünkü bir
+        // failure'ın konumuna bağlı değil: testin çağırdığı, ama hata mesajında
+        // adı hiç geçmeyen dosya. Bu blok olmadan model test hatalarında yalnızca
+        // testi görüyor ve "bozuk metodu göremiyorum" deyip düzeltmeyi reddediyor.
+        if (budget.IncludeCodeSnippets && ctx.RelatedSources.Count > 0)
+        {
+            foreach (var (path, content) in ctx.RelatedSources)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"Test edilen kod ({path}) — patlayan testin çağırdığı uygulama:");
+                sb.AppendLine("```");
+                sb.AppendLine(content.TrimEnd());
+                sb.AppendLine("```");
+            }
+        }
+
         if (budget.IncludeCodeSnippets)
         {
             foreach (var f in shownGroups.Select(g => g.Representative)

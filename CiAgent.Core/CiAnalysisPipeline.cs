@@ -34,6 +34,12 @@ public sealed record PipelineOutcome(
 /// </summary>
 public sealed class CiAnalysisPipeline
 {
+    /// <summary>Test edilen koddan bağlama en fazla kaç dosya eklenir.</summary>
+    private const int MaxTestSubjectFiles = 3;
+
+    /// <summary>Bu dosyaların toplam boyut sınırı (karakter).</summary>
+    private const int MaxTestSubjectChars = 12_000;
+
     private readonly IGitHubGateway _github;
     private readonly LlmService _llm;
     private readonly ReportService _report;
@@ -90,7 +96,12 @@ public sealed class CiAnalysisPipeline
         // ve raporlama için herhangi birinin HeadSha'sı yeterli.
         var headSha = failedJobs[0].HeadSha;
 
-        await EnrichWithCodeSnippetsAsync(context, owner, repo, headSha);
+        // Önbellek İKİ adım arasında paylaşılıyor: kesit çıkarma ile "test edilen
+        // kodu getir" adımı sık sık aynı dosyayı ister ve iki kez indirmek boşuna
+        // API çağrısı olurdu.
+        var contentCache = new Dictionary<string, string?>();
+        await EnrichWithCodeSnippetsAsync(context, owner, repo, headSha, contentCache);
+        await EnrichWithTestSubjectsAsync(context, owner, repo, headSha, contentCache);
 
         var result = await AnalyzeAsync(context);
         LogResult(result);
@@ -154,15 +165,14 @@ public sealed class CiAnalysisPipeline
     /// içerik path bazında cache'lenir — matrix build'de aynı dosya defalarca istenir.
     /// </summary>
     private async Task EnrichWithCodeSnippetsAsync(
-        ErrorContext context, string owner, string repo, string headSha)
+        ErrorContext context, string owner, string repo, string headSha,
+        Dictionary<string, string?> cache)
     {
         var located = context.Failures.Where(f => f.IsLocated).ToList();
         if (located.Count == 0)
             return;
 
         _log.LogInformation("İlgili kod dosyaları çekiliyor ({Count} konumlu failure)...", located.Count);
-
-        var cache = new Dictionary<string, string?>();
 
         foreach (var failure in located)
         {
@@ -186,6 +196,91 @@ public sealed class CiAnalysisPipeline
             {
                 // Kod çekme başarısız olsa bile agent LLM analizine kod olmadan devam etmeli.
                 _log.LogError(ex, "Kod çekilirken hata ({Path}:{Line}), kod kesiti olmadan devam ediliyor.", path, line);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Patlayan testin test ETTİĞİ uygulama dosyasını bulup bağlama ekler.
+    ///
+    /// Bu adım olmadan test hataları pratikte düzeltilemiyordu: hata konumu testi
+    /// gösterdiği için modele yalnızca test kodu gidiyor, bozuk metot hiç
+    /// görünmüyordu. Model de dürüstçe "göremediğim şey hakkında tahmin
+    /// yürütmem" deyip düzeltmeyi reddediyordu.
+    ///
+    /// Başarısızlık sessiz: dosya bulunamazsa ya da ağaç çekilemezse analiz
+    /// eskisi gibi (eksik bağlamla) devam eder — bu bir zenginleştirme, ön koşul
+    /// değil.
+    /// </summary>
+    private async Task EnrichWithTestSubjectsAsync(
+        ErrorContext context, string owner, string repo, string headSha,
+        Dictionary<string, string?> cache)
+    {
+        var subjects = context.Failures
+            .Where(f => f.Kind == FailureKind.Test)
+            .Select(f => TestSubjectResolver.SubjectTypeName(f.Name))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (subjects.Count == 0)
+            return;
+
+        IReadOnlyList<string> paths;
+        try
+        {
+            paths = await _github.ListFilePathsAsync(owner, repo, headSha);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Repo dosya listesi alınamadı; test edilen kod bağlama eklenemedi.");
+            return;
+        }
+
+        var totalChars = 0;
+
+        foreach (var subject in subjects)
+        {
+            foreach (var path in TestSubjectResolver.MatchSourceFiles(subject, paths))
+            {
+                if (context.RelatedSources.ContainsKey(path))
+                    continue;
+
+                if (context.RelatedSources.Count >= MaxTestSubjectFiles)
+                    return;
+
+                try
+                {
+                    if (!cache.TryGetValue(path, out var content))
+                    {
+                        content = await _github.GetFileContentAsync(owner, repo, path, headSha);
+                        cache[path] = content;
+                    }
+
+                    if (content is null)
+                        continue;
+
+                    // Tek bir devasa dosya prompt bütçesini yiyebilir. Sınırı aşan
+                    // dosyayı EKLEMEMEK, kırpıp eklemekten iyi: kırpılmış içerikte
+                    // /fix'in oldText eşleşmesi tutmaz.
+                    if (totalChars + content.Length > MaxTestSubjectChars)
+                    {
+                        _log.LogInformation(
+                            "'{Path}' bağlama eklenmedi: test edilen kod için boyut sınırı aşılıyor.", path);
+                        continue;
+                    }
+
+                    context.RelatedSources[path] = content;
+                    totalChars += content.Length;
+
+                    _log.LogInformation(
+                        "Test edilen kod bağlama eklendi: {Path} ({Subject} için).", path, subject);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Test edilen kod çekilemedi ({Path}), bu dosya olmadan devam ediliyor.", path);
+                }
             }
         }
     }
