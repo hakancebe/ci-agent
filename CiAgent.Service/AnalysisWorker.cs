@@ -35,6 +35,32 @@ internal sealed class AnalysisWorker : BackgroundService
         _fixRunner = fixRunner;
     }
 
+    /// <summary>
+    /// Kapanış sırası: önce yeni iş kabulünü kes, sonra kuyruktakini bitir.
+    ///
+    /// Bu olmadan bekleyen işler SESSİZCE kayboluyordu — GitHub 202 ("aldım")
+    /// cevabını aldığı için olayı tekrar göndermiyor, iş de hiç yapılmıyordu.
+    /// Kullanıcı tarafından görünüşü "ajan bu PR'a hiç cevap vermedi" oluyordu:
+    /// ne hata, ne uyarı, sadece sessizlik. Her deploy bu pencereyi açıyordu.
+    ///
+    /// CompleteWriter() burada, base.StopAsync'ten ÖNCE çağrılıyor: base zaten
+    /// ExecuteAsync'in bitmesini bekliyor, kuyruk kapatılmazsa okuma döngüsü hiç
+    /// sona ermez ve kapanış host'un ShutdownTimeout'una kadar boşuna asılırdı.
+    /// </summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        var pending = _queue.PendingCount;
+        _log.LogInformation(
+            "Kapanış istendi. Yeni iş alınmayacak; kuyrukta bekleyen {Pending} iş bitirilecek.",
+            pending);
+
+        _queue.CompleteWriter();
+
+        await base.StopAsync(cancellationToken);
+
+        _log.LogInformation("Worker durdu.");
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _log.LogInformation("Analiz worker'ı başladı, kuyruk dinleniyor.");
@@ -42,19 +68,23 @@ internal sealed class AnalysisWorker : BackgroundService
         // Tek okuyucu, sıralı işleme. Paralellik BİLEREK yok: eşzamanlı iki analiz
         // aynı Azure OpenAI kotasını yer ve rate limit'e takılır. Faz 3'te
         // installation başına eşzamanlılık tavanı gelecek.
-        await foreach (var work in _queue.ReadAllAsync(stoppingToken))
+        //
+        // stoppingToken BİLEREK verilmiyor: verilseydi kapanışta döngü anında
+        // kesilir ve tamponda bekleyen işler terk edilirdi — düzeltmeye
+        // çalıştığımız kusur tam olarak buydu. Döngü artık kuyruk KAPATILDIĞINDA
+        // (CompleteWriter) sona eriyor, yani bekleyenler işlendikten sonra.
+        // Sonsuza kadar asılma riski yok: host'un ShutdownTimeout'u üst sınır.
+        await foreach (var work in _queue.ReadAllAsync(CancellationToken.None))
         {
             try
             {
+                // İşin kendisine de stoppingToken verilmiyor: yarıda kesilen bir
+                // analiz, hiç yapılmamış analizden farksız — üstelik LLM çağrısı
+                // için para ödenmiş oluyor.
                 if (work.Analysis is not null)
-                    await ProcessAsync(work.Analysis, stoppingToken);
+                    await ProcessAsync(work.Analysis, CancellationToken.None);
                 else if (work.Fix is not null)
-                    await ProcessFixAsync(work.Fix, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                _log.LogInformation("Kapanış istendi, worker duruyor.");
-                break;
+                    await ProcessFixAsync(work.Fix, CancellationToken.None);
             }
             catch (Exception ex)
             {
@@ -64,6 +94,8 @@ internal sealed class AnalysisWorker : BackgroundService
                 _log.LogError(ex, "İş işlenirken beklenmeyen hata: {Job}", work);
             }
         }
+
+        _log.LogInformation("Kuyruk boşaldı, okuma döngüsü sona erdi.");
     }
 
     private async Task ProcessAsync(AnalysisJob job, CancellationToken ct)

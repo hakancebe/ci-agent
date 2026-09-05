@@ -29,6 +29,14 @@ TAG="${1:-}"
 
 APP_NAME="${WEB_APP_NAME:-ci-agent-web}"
 
+# Kapanışta kuyruğu boşaltmak için platformun tanıdığı süre (saniye).
+# Varsayılan 30 sn; tek bir analiz bile sığmıyor (log indirme + LLM turu ~20-60 sn)
+# ve süre dolunca süreç SIGKILL ile öldürülüyordu — bekleyen işler sessizce
+# kayboluyordu. 300 sn, uygulamanın kendi ShutdownTimeout'undan (4 dk) uzun
+# tutuldu ki süreç platform onu öldürmeden ÖNCE kendi kendine temiz kapansın.
+GRACE_PERIOD=300
+
+
 # --- Secret'lar ---------------------------------------------------------------
 # Eksik değerlerin HEPSİ toplanıp tek seferde bildiriliyor. Tek tek bildirmek
 # (`${VAR:?}` idiomunun yaptığı) altı değer için altı kez çalıştırmak demekti.
@@ -140,8 +148,12 @@ if az containerapp show -g "$RG" -n "$APP_NAME" >/dev/null 2>&1; then
     REMOVE_ARGS=()
     use_managed_identity && REMOVE_ARGS=(--remove-env-vars AZURE_OPENAI_KEY)
 
+    # --termination-grace-period BURADA da veriliyor: canlı uygulama zaten var
+    # olduğu için release hattı hep bu yoldan geçiyor. Yalnızca create'e eklemek,
+    # ayarın mevcut uygulamaya HİÇ uygulanmaması demek olurdu.
     az containerapp update -g "$RG" -n "$APP_NAME" \
         --image "$IMAGE" \
+        --termination-grace-period "$GRACE_PERIOD" \
         --set-env-vars "${ENV_VARS[@]}" "${REMOVE_ARGS[@]}" --only-show-errors >/dev/null
 
     # Secret da kaldırılıyor: env var gitse bile secret'ın kalması "prod'da sır yok"
@@ -162,6 +174,7 @@ else
         --user-assigned "$IDENTITY_ID" \
         --ingress external --target-port 8080 \
         --min-replicas 1 --max-replicas 1 \
+        --termination-grace-period "$GRACE_PERIOD" \
         --secrets "${SECRETS[@]}" \
         --env-vars "${ENV_VARS[@]}" \
         --only-show-errors >/dev/null
