@@ -62,8 +62,15 @@ public sealed class CiAnalysisPipeline
     /// yok) — analiz yapılır ve raporun tam metni loglanır. Azure OpenAI çağrısı yine
     /// de gider, yani ücret oluşur; dry-run "yazma yapma" demek, "hiçbir şey yapma" değil.
     /// </param>
+    /// <param name="precomputed">
+    /// Daha önce yapılmış analiz sonucu. Verilirse LLM'e HİÇ gidilmez, bu sonuç
+    /// kullanılır. /fix bunu analiz yorumuna gömülü veriden okuyor: aynı soruyu
+    /// ikinci kez sormak hem para harcıyor hem de — fixable kararı kararsız
+    /// olduğu için — rozetle /fix'in kararının ayrışmasına yol açıyordu.
+    /// </param>
     public async Task<PipelineOutcome> RunAsync(
-        string owner, string repo, long runId, bool dryRun = false)
+        string owner, string repo, long runId, bool dryRun = false,
+        AnalysisResult? precomputed = null)
     {
         _log.LogInformation("Hedef: {Owner}/{Repo} run {RunId}", owner, repo, runId);
 
@@ -103,7 +110,17 @@ public sealed class CiAnalysisPipeline
         await EnrichWithCodeSnippetsAsync(context, owner, repo, headSha, contentCache);
         await EnrichWithTestSubjectsAsync(context, owner, repo, headSha, contentCache);
 
-        var result = await AnalyzeAsync(context);
+        AnalysisResult result;
+        if (precomputed is not null)
+        {
+            _log.LogInformation("Hazır analiz sonucu kullanılıyor, LLM'e gidilmiyor.");
+            result = precomputed;
+        }
+        else
+        {
+            result = await AnalyzeAsync(context);
+        }
+
         LogResult(result);
 
         if (dryRun)

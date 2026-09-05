@@ -25,6 +25,20 @@ public sealed class PrCommenter
     }
 
     /// <summary>
+    /// Marker'ı taşıyan yorumun gövdesini döner; yoksa null.
+    /// /fix, analiz yorumuna gömülü sonucu okumak için kullanıyor.
+    /// </summary>
+    public async Task<string?> FindBodyByMarkerAsync(
+        string owner, string repo, int prNumber, string marker)
+    {
+        var existing = await _client.Issue.Comment.GetAllForIssue(owner, repo, prNumber);
+
+        return existing
+            .FirstOrDefault(c => c.Body is not null && c.Body.Contains(marker, StringComparison.Ordinal))
+            ?.Body;
+    }
+
+    /// <summary>
     /// Komutu aldığımızı belli eden tepki. İnsan "çalışıyor mu acaba" diye
     /// beklemesin; /fix bir-iki dakika sürebiliyor.
     /// </summary>

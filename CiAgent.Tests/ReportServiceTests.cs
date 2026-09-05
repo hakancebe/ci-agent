@@ -130,6 +130,31 @@ public class ReportServiceTests
     }
 
     [Fact]
+    public void BuildCommentBody_GomuluVeriRozetleAyniKarariTasir()
+    {
+        // Tutarsızlığın kökü: rozet ile /fix'in kararı FARKLI analizlerden
+        // geliyordu. Artık /fix bu gövdeye gömülü sonucu okuyor, yani ikisi
+        // aynı nesneden türüyor. Test bunu sabitliyor.
+        var body = ReportService.BuildCommentBody(NotFixableResult(), SampleContext(), runId: 1);
+
+        Assert.Contains("Otomatik düzeltilemez", body);          // insanın gördüğü
+
+        var decoded = AnalysisPayload.TryDecode(body);           // /fix'in okuduğu
+        Assert.NotNull(decoded);
+        Assert.False(Assert.Single(decoded!.Analyses).Fixable);
+    }
+
+    [Fact]
+    public void BuildCommentBody_GomuluVeriRenderEdilenMetinde_Gorunmez()
+    {
+        var body = ReportService.BuildCommentBody(SampleResult(), SampleContext(), runId: 1);
+
+        // HTML yorumu olarak gömülü: ham gövdede var, okuyucuya görünmüyor.
+        Assert.Contains("<!-- ci-agent-data:", body);
+        Assert.NotNull(AnalysisPayload.TryDecode(body));
+    }
+
+    [Fact]
     public void BuildMarker_RunIdiIcerenGizliHtmlYorumuUretir()
     {
         var marker = ReportService.BuildMarker(30797639694);

@@ -267,6 +267,12 @@ public class ReportService
         sb.AppendLine("---");
         sb.AppendLine($"<sub>Run ID: {runId} · Bu yorum CiAgent tarafından otomatik oluşturuldu; aynı run tekrar analiz edilirse bu yorum güncellenir.</sub>");
 
+        // Gizli veri bloğu: /fix bu yorumu okuyup AYNI analiz sonucunu kullanıyor,
+        // böylece rozet ile /fix'in kararı ayrışamıyor (bkz. AnalysisPayload).
+        // En sonda çünkü render edilen markdown'da görünmüyor.
+        sb.AppendLine();
+        sb.AppendLine(AnalysisPayload.Encode(result));
+
         return sb.ToString();
     }
 

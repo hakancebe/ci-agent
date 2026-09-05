@@ -265,6 +265,40 @@ public class CiAnalysisPipelineTests
         Assert.Equal(new[] { "src/Calc.cs" }, gateway.FileCalls);
     }
 
+    [Fact]
+    public async Task RunAsync_SkipsTheLlm_WhenAnalysisIsAlreadyKnown()
+    {
+        // /fix bu yolu kullanıyor: analiz yorumuna gömülü sonucu okuyup aynısını
+        // geçiriyor. İkinci kez sormak hem para harcardı hem de — fixable kararı
+        // kararsız olduğu için — rozetle /fix'in kararını ayrıştırırdı.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "build", "failure") },
+            LogsByJobId = { [10] = TestLog("A.CalcTests.Add", "tests/CalcTests.cs", 3) }
+        };
+        var llm = new FakeLlm(ValidJson);
+
+        var stored = new AnalysisResult
+        {
+            Summary = "önceden yapılmış analiz",
+            Analyses = { new Analysis
+            {
+                Title = "t", RootCause = "r", SuggestedFix = "s",
+                Confidence = "high", Fixable = false
+            }}
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, llm, new RecordingReport())
+            .RunAsync("o", "r", 99, dryRun: true, precomputed: stored);
+
+        Assert.Equal(0, llm.CallCount);                                  // LLM'e hiç gidilmedi
+        Assert.Equal("önceden yapılmış analiz", outcome.Result!.Summary); // aynı sonuç kullanıldı
+        Assert.False(Assert.Single(outcome.Result.Analyses).Fixable);
+
+        // Bağlam yine de kurulmalı: /fix'in düzeltme için buna ihtiyacı var.
+        Assert.NotNull(outcome.Context);
+    }
+
     // --- Test edilen kodu bağlama ekleme --------------------------------
     // Canlıda görülen eksik: bir test patladığında hata konumu TEST dosyasını
     // gösteriyor, dolayısıyla modele yalnızca test kodu gidiyor ve testin

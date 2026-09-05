@@ -114,11 +114,17 @@ public sealed class FixCoordinator
             return new FixRunResult(FixRunStatus.NoFailedRun, Message: message);
         }
 
-        // Analizi dry-run modunda çalıştırıyoruz: hata bağlamı ve kök neden
-        // gerekli, ama ayrı bir analiz yorumu atılmasını istemiyoruz - /fix
-        // zaten kendi yorumunu yazacak.
+        // Analiz yorumuna gömülü sonucu okumayı dene. Bulursak LLM'e hiç
+        // gitmiyoruz ve — asıl mesele — kullanıcının yorumda GÖRDÜĞÜ kararla
+        // (rozet dahil) birebir aynı sonucu kullanıyoruz. Eskiden /fix kendi
+        // analizini koşturduğu için ikisi ayrışabiliyordu: canlıda bir turda
+        // rozet çıkmamışken /fix yine de "düzeltilemez" demişti.
+        var stored = await LoadStoredAnalysisAsync(request, runId.Value);
+
+        // Bağlam (loglar, kod kesitleri, test edilen kod) her hâlükârda yeniden
+        // kuruluyor — o yoruma gömülmüyor ve düzeltme için şart.
         var analysis = await _analysis.RunAsync(
-            request.Owner, request.Repo, runId.Value, dryRun: true);
+            request.Owner, request.Repo, runId.Value, dryRun: true, precomputed: stored);
 
         if (analysis.Context is null || analysis.Result is null)
         {
@@ -147,6 +153,37 @@ public sealed class FixCoordinator
             FixReport.BuildBody(outcome, committed: pushed, request.CommentId));
 
         return new FixRunResult(FixRunStatus.Completed, outcome, pushed);
+    }
+
+    /// <summary>
+    /// Analiz yorumundaki gizli veri bloğundan sonucu okur; yoksa null döner ve
+    /// analiz baştan yapılır.
+    ///
+    /// Başarısızlık sessiz ve zararsız: yorum silinmiş, elle düzenlenmiş ya da
+    /// bu bloğu taşımayan eski bir sürümde yazılmış olabilir. Hepsinin doğru
+    /// cevabı aynı — "veri yok, analizi kendin yap".
+    /// </summary>
+    private async Task<AnalysisResult?> LoadStoredAnalysisAsync(FixRequest request, long runId)
+    {
+        try
+        {
+            var body = await _commenter.FindBodyByMarkerAsync(
+                request.Owner, request.Repo, request.PullRequestNumber,
+                ReportService.BuildMarker(runId));
+
+            var stored = AnalysisPayload.TryDecode(body);
+
+            _log.LogInformation(stored is not null
+                ? "Analiz yorumundaki sonuç okundu; LLM analizi tekrarlanmayacak."
+                : "Analiz yorumunda gömülü sonuç bulunamadı; analiz baştan yapılacak.");
+
+            return stored;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Gömülü analiz sonucu okunamadı; analiz baştan yapılacak.");
+            return null;
+        }
     }
 
     private async Task<bool> CommitAsync(string workspaceRoot, FixOutcome outcome, string branch)
