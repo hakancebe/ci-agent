@@ -82,11 +82,21 @@ jobs:
             .
 
       - name: Web servisini güncelle
+        # --termination-grace-period BURADA olmak ZORUNDA: deploy bu adımdan
+        # geçiyor, infra/20-deploy-web.sh'ten değil. Yalnızca script'e eklemek
+        # ayarın canlıya HİÇ uygulanmaması demekti — v0.6.2'de tam bu oldu,
+        # terminationGracePeriodSeconds null kaldı.
+        #
+        # 300 sn, uygulamanın kendi ShutdownTimeout'undan (4 dk) uzun: süreç
+        # platform tarafından öldürülmeden önce kuyruğu boşaltıp temiz kapansın.
+        # Bu olmadan varsayılan 30 sn geçerli olur ve bekleyen işler yine
+        # sessizce kaybolur.
         run: |
           ACR_SERVER=$(az acr show -n "$ACR_NAME" -g "$RESOURCE_GROUP" --query loginServer -o tsv)
           az containerapp update \
             -g "$RESOURCE_GROUP" -n "$WEB_APP_NAME" \
             --image "$ACR_SERVER/ci-agent:${{ steps.version.outputs.tag }}" \
+            --termination-grace-period 300 \
             --set-env-vars "CI_AGENT_FIX_JOB_IMAGE=$ACR_SERVER/ci-agent:${{ steps.version.outputs.tag }}" \
             --only-show-errors
 
