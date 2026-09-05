@@ -21,6 +21,8 @@ public class FixCoordinatorTests
             => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
         public Task<string?> GetFileContentAsync(string o, string r, string p, string s)
             => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
+        public Task<IReadOnlyList<string>> ListFilePathsAsync(string o, string r, string s)
+            => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
     }
 
     /// <summary>

@@ -18,4 +18,11 @@ public interface IGitHubGateway
 
     /// <summary>Dosya bulunamazsa null döner; ağ/izin hataları yukarı fırlar.</summary>
     Task<string?> GetFileContentAsync(string owner, string repo, string path, string ref_);
+
+    /// <summary>
+    /// Repodaki tüm dosya yolları (tek recursive çağrı). Patlayan bir testin test
+    /// ettiği uygulama dosyasını ADINDAN bulabilmek için gerekli — o dosyanın yolu
+    /// hata mesajında geçmiyor. Repo bulunamazsa boş liste.
+    /// </summary>
+    Task<IReadOnlyList<string>> ListFilePathsAsync(string owner, string repo, string ref_);
 }

@@ -254,6 +254,48 @@ public sealed class FixPipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_FixesImplementation_WhenOnlyTheTestFileIsLocated()
+    {
+        // Test hatalarının asıl senaryosu: failure TEST dosyasını gösteriyor ve
+        // politika onu reddediyor. Düzeltilecek uygulama dosyası yalnızca
+        // RelatedSources'ta duruyor — aday listesine oradan girmeli, yoksa
+        // FilesRejected'a düşer ve hiçbir şey yapılamaz.
+        var path = WriteFile("src/Calc.cs", "int Add(int a, int b) => a - b;");
+        WriteFile("tests/CalcTests.cs", "Assert.Equal(4, calc.Add(2, 2));");
+
+        var context = new ErrorContext
+        {
+            JobName = "build", FailedStepName = "Test",
+            Failures =
+            {
+                new Failure
+                {
+                    Kind = FailureKind.Test, Name = "A.CalcTests.Add",
+                    JobName = "build", StepName = "Test",
+                    FilePath = "tests/CalcTests.cs", LineNumber = 1,
+                    Message = "Assert.Equal() Failure: Values differ"
+                }
+            },
+            RelatedSources = { ["src/Calc.cs"] = "int Add(int a, int b) => a - b;" }
+        };
+
+        // Analiz uygulama dosyasını işaret etmese bile RelatedSources yeterli olmalı.
+        var llm = new ScriptedLlm(Proposal("operatör düzeltildi", ("src/Calc.cs", "a - b", "a + b")));
+        var verifier = new ScriptedVerifier(Pass);
+
+        var outcome = await new FixPipeline(llm, verifier)
+            .RunAsync(context, Analysis(affectedFile: null), _root);
+
+        Assert.Equal(FixStatus.Fixed, outcome.Status);
+        Assert.Equal("int Add(int a, int b) => a + b;", await File.ReadAllTextAsync(path));
+
+        // Test dosyasının İÇERİĞİ modele düzenlenmek üzere verilmemeli. (Yolu
+        // prompt'ta geçiyor — hangi testin patladığı bilgisi olarak, o doğru.)
+        Assert.DoesNotContain("Assert.Equal(4, calc.Add(2, 2));", llm.Prompts[0]);
+        Assert.Contains("int Add(int a, int b) => a - b;", llm.Prompts[0]);
+    }
+
+    [Fact]
     public async Task RunAsync_RejectsPlaceholderEdit_AndNeverVerifies()
     {
         // Canlıda üç turda üç kez görülen davranış: tanımsız adı bir literalle

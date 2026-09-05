@@ -280,9 +280,13 @@ public sealed class FixPipeline
         CollectFilesAsync(WorkspaceEditor editor, ErrorContext context, AnalysisResult analysis)
     {
         // Öncelik LLM'in "etkilenen dosya" dediğinde; sonra parser'ın bulduğu konumlar.
+        // RelatedSources da aday: test hatalarında failure'ın FilePath'i TEST
+        // dosyasını gösterir ve politika onu reddeder — düzeltilmesi gereken
+        // uygulama dosyası yalnızca burada duruyor.
         var candidates = analysis.Analyses
             .Select(a => a.AffectedFile)
             .Concat(context.Failures.Select(f => f.FilePath))
+            .Concat(context.RelatedSources.Keys)
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .Select(p => p!.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase);

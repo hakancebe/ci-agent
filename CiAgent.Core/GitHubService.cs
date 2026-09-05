@@ -123,6 +123,26 @@ public class GitHubService : IGitHubGateway
   // exception dışa sızdırılmaz, çağıran taraf (Program.cs) kod kesiti olmadan devam
   // eder. Ağ/izin gibi diğer hatalar ise olduğu gibi yukarı fırlatılır; Program.cs
   // zaten bunu try-catch ile ele alıyor.
+  // Ağaç API'si tek çağrıda tüm yolları döner; dosya adına göre arama yapan
+  // Search API'sine göre hem hızlı hem indeksleme gecikmesinden bağımsız.
+  // Blob olmayan girdiler (klasör, submodule) eleniyor.
+  public async Task<IReadOnlyList<string>> ListFilePathsAsync(string owner, string repo, string ref_)
+  {
+    try
+    {
+      var tree = await _client.Git.Tree.GetRecursive(owner, repo, ref_);
+
+      return tree.Tree
+        .Where(t => string.Equals(t.Type.StringValue, "blob", StringComparison.OrdinalIgnoreCase))
+        .Select(t => t.Path)
+        .ToList();
+    }
+    catch (NotFoundException)
+    {
+      return [];
+    }
+  }
+
   public async Task<string?> GetFileContentAsync(string owner, string repo, string path, string ref_)
   {
     IReadOnlyList<RepositoryContent> contents;
