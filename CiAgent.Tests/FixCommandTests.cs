@@ -15,13 +15,24 @@ public class FixCommandTests
         var cmd = FixCommand.TryParse(body);
 
         Assert.NotNull(cmd);
-        Assert.False(cmd!.DryRun);
+        // Varsayılan ÖNERİ modu: bayraksız /fix commit etmez.
+        Assert.False(cmd!.Commit);
     }
 
     [Fact]
-    public void TryParse_ReadsDryRunFlag()
+    public void TryParse_ReadsCommitFlag()
     {
-        Assert.True(FixCommand.TryParse("/fix --dry-run")!.DryRun);
+        Assert.True(FixCommand.TryParse("/fix --commit")!.Commit);
+    }
+
+    [Fact]
+    public void TryParse_StillAcceptsDryRun_ButItIsNowTheDefault()
+    {
+        // Geriye dönük uyum: --dry-run artık varsayılanı tarif ediyor, hata değil.
+        var cmd = FixCommand.TryParse("/fix --dry-run");
+
+        Assert.NotNull(cmd);
+        Assert.False(cmd!.Commit);
     }
 
     [Theory]

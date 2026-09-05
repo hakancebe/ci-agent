@@ -2,8 +2,22 @@ namespace CiAgent.Core;
 
 /// <summary>
 /// PR yorumundan ayrıştırılan /fix komutu.
+///
+/// VARSAYILAN ÖNERİ MODU: `/fix` düzeltmeyi üretir, uygular ve derleme+testlerle
+/// DOĞRULAR — ama dala commit ETMEZ. Commit istemek için `/fix --commit` gerekir.
+///
+/// Neden varsayılan bu: doğrulama döngüsü (derleme + test) tek başına düzeltmenin
+/// DOĞRU olduğunu göstermiyor. Değişen satırın test kapsamı yoksa model derlenen
+/// herhangi bir değişikliği yapabiliyor ve döngü onaylıyor. Canlıda beş turda beş
+/// farklı "derlemeyi geçiren ama hatayı gizleyen" varyant görüldü (uydurma literal,
+/// farklı literal, boş string, satırı yorum yapmak, adı literal içine saklamak).
+/// Deterministik koruma yalnızca CS0103'ü kapsıyor; diğer hata sınıflarında tek
+/// savunma modelin kendi kararı ve o kararın kararsız olduğu ölçüldü.
+///
+/// Bu yüzden commit artık otomatik değil, insanın açık isteği. Ajan yine tüm işi
+/// yapıyor (öneri + doğrulama), yalnızca son adım — dala yazmak — insana ait.
 /// </summary>
-public sealed record FixCommand(bool DryRun)
+public sealed record FixCommand(bool Commit)
 {
     /// <summary>
     /// Yorum gövdesinden komutu çıkarır; komut değilse null döner.
@@ -28,9 +42,12 @@ public sealed record FixCommand(bool DryRun)
         if (parts.Length == 0 || !parts[0].Equals("/fix", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var dryRun = parts.Skip(1).Any(p => p.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
+        // --dry-run hâlâ KABUL EDİLİYOR ama artık varsayılanı tarif ediyor, yani
+        // etkisiz. Bilerek hata vermiyoruz: eski alışkanlıkla yazan biri anlamca
+        // doğru olan şeyi istemiş oluyor.
+        var commit = parts.Skip(1).Any(p => p.Equals("--commit", StringComparison.OrdinalIgnoreCase));
 
-        return new FixCommand(dryRun);
+        return new FixCommand(commit);
     }
 }
 
@@ -38,9 +55,9 @@ public sealed record FixCommand(bool DryRun)
 /// Yorumu yazan kişi /fix çalıştırabilir mi? GitHub'ın author_association
 /// alanına bakıyoruz.
 ///
-/// Bu kontrol şart: /fix agent'a repo'da kod değiştirtip commit attırıyor.
-/// Herkesin yorum yazabildiği açık bir repoda, yetkisiz birinin bunu
-/// tetikleyebilmesi doğrudan bir saldırı yüzeyi olurdu.
+/// Bu kontrol şart: /fix agent'a repo'da kod değiştirtiyor (ve --commit ile
+/// commit attırıyor). Herkesin yorum yazabildiği açık bir repoda, yetkisiz
+/// birinin bunu tetikleyebilmesi doğrudan bir saldırı yüzeyi olurdu.
 /// </summary>
 public static class FixAuthorization
 {

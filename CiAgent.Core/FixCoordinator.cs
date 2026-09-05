@@ -68,7 +68,7 @@ public sealed class FixCoordinator
             return new FixRunResult(FixRunStatus.NotAuthorized);
         }
 
-        _log.LogInformation("/fix kabul edildi (dry-run={DryRun}).", command.DryRun);
+        _log.LogInformation("/fix kabul edildi (commit={Commit}).", command.Commit);
         await _commenter.AcknowledgeAsync(request.Owner, request.Repo, request.CommentId);
 
         var pr = await _github.GetPullRequestInfoAsync(
@@ -128,17 +128,23 @@ public sealed class FixCoordinator
             return new FixRunResult(FixRunStatus.NoFailedRun, Message: message);
         }
 
+        // dryRun burada "commit etme" demek: öneri modunda değişiklik uygulanıp
+        // doğrulanıyor, sonra çalışma dizini temiz bırakılıyor. Yamanın kendisi
+        // FixOutcome.Edits içinde taşındığı için rapor diff'i yine gösterebiliyor.
         var outcome = await _fix.RunAsync(
-            analysis.Context, analysis.Result, workspaceRoot, command.DryRun);
+            analysis.Context, analysis.Result, workspaceRoot, dryRun: !command.Commit);
 
+        // Commit artık VARSAYILAN DEĞİL, açık istek. Gerekçesi FixCommand'in
+        // dokümantasyonunda: doğrulama döngüsü düzeltmenin doğruluğunu değil
+        // yalnızca derlenip testleri geçtiğini gösteriyor.
         var pushed = false;
-        if (outcome.Succeeded && !command.DryRun)
+        if (outcome.Succeeded && command.Commit)
             pushed = await CommitAsync(workspaceRoot, outcome, branch);
 
         await _commenter.UpsertAsync(
             request.Owner, request.Repo, request.PullRequestNumber,
             FixReport.BuildMarker(request.CommentId),
-            FixReport.BuildBody(outcome, command.DryRun, request.CommentId));
+            FixReport.BuildBody(outcome, committed: pushed, request.CommentId));
 
         return new FixRunResult(FixRunStatus.Completed, outcome, pushed);
     }
