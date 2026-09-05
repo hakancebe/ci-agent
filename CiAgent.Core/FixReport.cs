@@ -11,13 +11,13 @@ public static class FixReport
 {
     public static string BuildMarker(long commentId) => $"<!-- ci-agent-fix:{commentId} -->";
 
-    public static string BuildBody(FixOutcome outcome, bool dryRun, long commentId)
+    public static string BuildBody(FixOutcome outcome, bool committed, long commentId)
     {
         var sb = new StringBuilder();
         sb.AppendLine(BuildMarker(commentId));
 
         if (outcome.Succeeded)
-            AppendSuccess(sb, outcome, dryRun);
+            AppendSuccess(sb, outcome, committed);
         else
             AppendFailure(sb, outcome);
 
@@ -29,20 +29,30 @@ public static class FixReport
         return sb.ToString();
     }
 
-    private static void AppendSuccess(StringBuilder sb, FixOutcome outcome, bool dryRun)
+    private static void AppendSuccess(StringBuilder sb, FixOutcome outcome, bool committed)
     {
-        if (dryRun)
-        {
-            sb.AppendLine("## 🔍 CiAgent — /fix (dry-run)");
-            sb.AppendLine();
-            sb.AppendLine("Düzeltme denendi ve **derleme + testler geçti**, ancak `--dry-run` "
-                        + "verildiği için hiçbir şey commit edilmedi.");
-        }
-        else
+        if (committed)
         {
             sb.AppendLine("## ✅ CiAgent — /fix");
             sb.AppendLine();
             sb.AppendLine("Düzeltme uygulandı ve **derleme + testler geçti**. Değişiklik bu PR'ın dalına commit edildi.");
+        }
+        else
+        {
+            // Varsayılan yol. Başlıkta "doğrulanmış öneri" demek bilinçli: bu bir
+            // tahmin değil, uygulanıp derlenmiş ve testleri geçmiş bir yama —
+            // ama doğrulamanın neyi KANITLAMADIĞI da söyleniyor.
+            sb.AppendLine("## 🔍 CiAgent — /fix (doğrulanmış öneri)");
+            sb.AppendLine();
+            sb.AppendLine("Aşağıdaki değişiklik uygulanıp **derleme + testler çalıştırıldı ve geçti**, "
+                        + "ancak dala **commit edilmedi**.");
+            sb.AppendLine();
+            sb.AppendLine("> Derlemenin ve testlerin geçmesi, düzeltmenin *doğru* olduğunu kanıtlamaz — "
+                        + "değişen satırın test kapsamı yoksa geçen her değişiklik aynı görünür. "
+                        + "Bu yüzden son karar sizde.");
+            sb.AppendLine();
+            sb.AppendLine("Değişikliği elle uygulayabilir, ya da bu PR'a **`/fix --commit`** yazarak "
+                        + "agent'ın dala commit'lemesini isteyebilirsiniz.");
         }
 
         sb.AppendLine();
@@ -55,7 +65,9 @@ public static class FixReport
             sb.AppendLine();
         }
 
-        AppendEditList(sb, outcome);
+        // Öneri modunda başlık da öyle okunmalı: değişiklik dalda DEĞİL.
+        AppendEditList(sb, outcome,
+            title: committed ? "Değişiklikler" : "Önerilen değişiklik (uygulanmadı)");
     }
 
     private static void AppendFailure(StringBuilder sb, FixOutcome outcome)

@@ -20,7 +20,7 @@ public class FixReportTests
     {
         var outcome = new FixOutcome(FixStatus.Fixed, "düzeltildi", [Applied()], 1);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 555);
+        var body = FixReport.BuildBody(outcome, committed: true, commentId: 555);
 
         Assert.StartsWith(FixReport.BuildMarker(555), body);
     }
@@ -30,7 +30,7 @@ public class FixReportTests
     {
         var outcome = new FixOutcome(FixStatus.Fixed, "Operatör düzeltildi", [Applied()], 1);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: true, commentId: 1);
 
         Assert.Contains("✅", body);
         Assert.Contains("commit edildi", body);
@@ -39,15 +39,32 @@ public class FixReportTests
     }
 
     [Fact]
-    public void BuildBody_SaysNothingWasCommitted_OnDryRun()
+    public void BuildBody_SaysNothingWasCommitted_AndOffersCommitFlag_InProposeMode()
     {
+        // Varsayılan yol: doğrulandı ama dala yazılmadı. Yorum üç şeyi birden
+        // söylemeli — doğrulandığını, commit EDİLMEDİĞİNİ ve nasıl istenebileceğini.
         var outcome = new FixOutcome(FixStatus.Fixed, "Operatör düzeltildi", [Applied()], 1);
 
-        var body = FixReport.BuildBody(outcome, dryRun: true, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
-        Assert.Contains("dry-run", body);
+        Assert.Contains("derleme + testler çalıştırıldı ve geçti", body);
         Assert.Contains("commit edilmedi", body);
+        Assert.Contains("/fix --commit", body);
         Assert.DoesNotContain("commit edildi.", body);
+    }
+
+    [Fact]
+    public void BuildBody_DoesNotClaimTheFixIsProvenCorrect_InProposeMode()
+    {
+        // Bu oturumun kök dersi: derleme+test geçmesi düzeltmenin DOĞRU olduğunu
+        // göstermiyor. Yorum bu sınırı açıkça söylemeli, yoksa "yeşil = doğru"
+        // yanılgısını pekiştirir.
+        var outcome = new FixOutcome(FixStatus.Fixed, "Operatör düzeltildi", [Applied()], 1);
+
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
+
+        Assert.Contains("kanıtlamaz", body);
+        Assert.Contains("test kapsamı", body);
     }
 
     [Fact]
@@ -58,7 +75,7 @@ public class FixReportTests
             FixStatus.VerificationFailed, "denendi", [Applied()], 2,
             "Failed! - Failed: 1, Assert.Equal() Values differ");
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("otomatik düzeltemedi", body);
         Assert.Contains("geri alındı", body);
@@ -72,7 +89,7 @@ public class FixReportTests
         var outcome = new FixOutcome(FixStatus.EditsRejected, "denendi",
             [Rejected("CiAgent.Tests/CalcTests.cs", "test dosyaları düzenlenemez")], 1);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("CiAgent.Tests/CalcTests.cs", body);
         Assert.Contains("test dosyaları düzenlenemez", body);
@@ -83,7 +100,7 @@ public class FixReportTests
     {
         var outcome = new FixOutcome(FixStatus.NoSourceFiles, "dosya yok", [], 0);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("kaynak dosyaya bağlanamadı", body);
         Assert.Contains("restore", body, StringComparison.OrdinalIgnoreCase);
@@ -103,7 +120,7 @@ public class FixReportTests
                 "src/CiPilot.Core/Tests.cs",
                 "test dosyaları düzenlenemez: 'src/CiPilot.Core/Tests.cs'")]);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("otomatik düzeltemedi", body);
         Assert.Contains("Politika dışı bırakılan dosyalar", body);
@@ -120,7 +137,7 @@ public class FixReportTests
             FixStatus.NotAutomaticallyFixable,
             "Bu değişkenin ne olması gerektiği koddan çıkarılamıyor.", [], 0);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("otomatik düzeltemedi", body);
         Assert.Contains("koddan belirlenemediğini", body);
@@ -133,7 +150,7 @@ public class FixReportTests
     {
         var outcome = new FixOutcome(FixStatus.Fixed, "düzeltildi", [Applied()], 2);
 
-        var body = FixReport.BuildBody(outcome, dryRun: false, commentId: 1);
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("2. denemede", body);
     }
