@@ -20,6 +20,12 @@ builder.Logging.AddSimpleConsole(o =>
 
 var options = ServiceOptions.FromConfiguration(builder.Configuration);
 
+// Kapanışta kuyruğu boşaltmaya izin veren süre. Varsayılan 30 saniye, tek bir
+// analiz için bile yetmiyor (log indirme + LLM turu ~20-60 sn). ACA'nın
+// termination grace period'ından KISA tutuluyor ki süreç platform tarafından
+// öldürülmeden önce kendi kendine temiz kapanabilsin.
+builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromMinutes(4));
+
 // İzleme yalnızca yapılandırıldıysa açılıyor. Bağlantı dizesi yoksa servis
 // normal çalışıyor — izleme bir kolaylık, ayağa kalkmanın ön koşulu değil.
 if (!string.IsNullOrWhiteSpace(options.AppInsightsConnectionString))
@@ -166,6 +172,7 @@ app.MapPost("/webhooks/github", async (HttpRequest request, WorkQueue queue,
             {
                 EnqueueResult.Queued => Results.Accepted(value: new { status = "queued" }),
                 EnqueueResult.Duplicate => Results.Accepted(value: new { status = "duplicate" }),
+                // Full ve ShuttingDown: ikisi de 503 — GitHub tekrar gönderir.
                 _ => Results.StatusCode(503)
             };
         }
@@ -202,6 +209,12 @@ app.MapPost("/webhooks/github", async (HttpRequest request, WorkQueue queue,
                 log.LogInformation("Tekrar teslimat yok sayıldı: {Job} (delivery {Delivery})",
                     outcome.Job, deliveryId);
                 return Results.Accepted(value: new { status = "duplicate" });
+
+            case EnqueueResult.ShuttingDown:
+                // 503: GitHub olayı tekrar gönderecek ve YENİ revizyon karşılayacak.
+                // Kapanan kopya bunu almasa da iş kaybolmuyor.
+                log.LogInformation("Servis kapanıyor, iş yeni revizyona bırakıldı: {Job}", outcome.Job);
+                return Results.StatusCode(503);
 
             default:
                 // 503 bilinçli: GitHub bunu başarısız sayıp olayı TEKRAR gönderir,

@@ -99,4 +99,65 @@ public class WorkQueueTests
 
         Assert.Equal(EnqueueResult.Duplicate, queue.TryEnqueue(Job("delivery-49")));
     }
+
+    // --- Kapanışta boşaltma -----------------------------------------------
+    // Düzeltilen kusur: kapanışta bekleyen işler SESSİZCE kayboluyordu. GitHub
+    // 202 ("aldım") aldığı için olayı tekrar göndermiyor, iş de hiç yapılmıyordu.
+
+    [Fact]
+    public void CompleteWriter_RefusesNewWork_SoGitHubRetriesAgainstTheNewRevision()
+    {
+        var queue = new WorkQueue();
+        queue.CompleteWriter();
+
+        var result = queue.TryEnqueue(Job("d1"));
+
+        // Full DEĞİL ShuttingDown: sebep farklı, log da doğru sebebi yazmalı.
+        Assert.Equal(EnqueueResult.ShuttingDown, result);
+    }
+
+    [Fact]
+    public void CompleteWriter_DoesNotMarkRefusedDeliveryAsSeen()
+    {
+        // Kritik incelik: reddedilen delivery "görüldü" diye işaretlenirse,
+        // GitHub tekrar gönderdiğinde duplicate sayılıp sessizce yutulurdu —
+        // yani kaybı önlemeye çalışırken kaybı garantilerdik.
+        var queue = new WorkQueue();
+        queue.CompleteWriter();
+        queue.TryEnqueue(Job("d1"));
+
+        // Yeni bir kuyruk (yeni revizyon) aynı delivery'yi kabul edebilmeli.
+        var fresh = new WorkQueue();
+        Assert.Equal(EnqueueResult.Queued, fresh.TryEnqueue(Job("d1")));
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_DrainsBufferedWork_ThenEnds_AfterCompleteWriter()
+    {
+        // Asıl garanti: kapanış kuyruğu TERK ETMİYOR, boşaltıyor.
+        var queue = new WorkQueue();
+        queue.TryEnqueue(Job("d1"));
+        queue.TryEnqueue(Job("d2"));
+        queue.TryEnqueue(Job("d3"));
+
+        queue.CompleteWriter();
+
+        var drained = new List<string>();
+        await foreach (var work in queue.ReadAllAsync(CancellationToken.None))
+            drained.Add(work.DeliveryId);
+
+        // Döngü kendiliğinden sona erdi (aksi halde test asılırdı) ve
+        // bekleyenlerin hepsi işlendi.
+        Assert.Equal(["d1", "d2", "d3"], drained);
+    }
+
+    [Fact]
+    public void PendingCount_ReportsWhatWouldBeLost()
+    {
+        var queue = new WorkQueue();
+        queue.TryEnqueue(Job("d1"));
+        queue.TryEnqueue(Job("d2"));
+
+        Assert.Equal(2, queue.PendingCount);
+    }
 }
