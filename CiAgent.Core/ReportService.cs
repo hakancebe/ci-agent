@@ -167,6 +167,26 @@ public class ReportService
 
     internal static string BuildMarker(long runId) => $"<!-- ci-agent:{runId} -->";
 
+    /// <summary>
+    /// Bir yorum gövdesindeki analiz marker'ından run id'sini çıkarır; yoksa null.
+    /// Marker biçimi tek yerde tanımlı kalsın diye <see cref="BuildMarker"/>
+    /// ile aynı sınıfta duruyor.
+    /// </summary>
+    internal static long? TryParseRunId(string? body)
+    {
+        if (string.IsNullOrEmpty(body))
+            return null;
+
+        var match = MarkerRunIdRegex.Match(body);
+        return match.Success && long.TryParse(match.Groups["id"].Value, out var id)
+            ? id
+            : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex MarkerRunIdRegex = new(
+        @"<!-- ci-agent:(?<id>\d+) -->",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
     // --- Markdown üretimi (saf, test edilebilir) ------------------------
 
     /// <summary>

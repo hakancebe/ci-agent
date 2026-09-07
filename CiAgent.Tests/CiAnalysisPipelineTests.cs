@@ -167,6 +167,63 @@ public class CiAnalysisPipelineTests
 
     // --- Testler ---------------------------------------------------------
 
+    // --- Raporlanan commit ------------------------------------------------
+    // workflow_run ile tetiklenen çalışmalarda run'ın head_sha'sı varsayılan
+    // dalı gösteriyor; job başka bir commit'i derlemiş olabiliyor. Canlıda
+    // ölçüldü (pilot PR #16): analiz doğruydu ama rapor main'in alakasız bir
+    // commit'ine düştü ve PR sahibi hiç görmedi.
+
+    [Fact]
+    public async Task RunAsync_ReportsToTheCommitTheJobActuallyBuilt_NotTheRunsHeadSha()
+    {
+        const string real = "e7c838c8f7082ce21e4a09c3d1dd9d3091e562dd";
+
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "deploy", "failure", stepName: "Smoke test") },
+            LogsByJobId =
+            {
+                [10] = $"""
+                ##[group]Checking out the ref
+                [command]/usr/bin/git checkout --progress --force {real}
+                ##[endgroup]
+                ##[group]Run ./smoke.sh
+                ##[error]Health check basarisiz
+                """
+            }
+        };
+        var report = new RecordingReport();
+
+        await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), report).RunAsync("o", "r", 99);
+
+        // Job'ın bildirdiği "sha-abc" değil, gerçekten checkout edilen commit.
+        Assert.Equal(real, report.HeadSha);
+    }
+
+    [Fact]
+    public async Task RunAsync_KeepsTheRunsHeadSha_WhenNoBareCommitWasCheckedOut()
+    {
+        // Sıradan CI: checkout hedefi bir ref. Run'ın kendi SHA'sı zaten doğru,
+        // dokunulmamalı.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "build-test", "failure") },
+            LogsByJobId =
+            {
+                [10] = """
+                [command]/usr/bin/git checkout --progress --force refs/remotes/pull/16/merge
+                ##[group]Run dotnet test
+                ##[error]Process completed with exit code 1.
+                """
+            }
+        };
+        var report = new RecordingReport();
+
+        await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), report).RunAsync("o", "r", 99);
+
+        Assert.Equal("sha-abc", report.HeadSha);
+    }
+
     // --- Workflow dosyası ------------------------------------------------
 
     [Fact]

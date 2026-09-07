@@ -33,6 +33,38 @@ public static class LogParser
             .Select(g => g.First()) // Toplanan annotationlar içinden ilkini çeker
             .ToList();  // List<CheckRunAnnotation> döndürür
     }
+    /// <summary>
+    /// Job'ın GERÇEKTE checkout ettiği commit. Bulunamazsa null.
+    ///
+    /// Neden gerekli: <c>workflow_run</c> ile tetiklenen bir çalışmayı GitHub
+    /// her zaman VARSAYILAN DALA bağlıyor. Bir PR'ın CI'ı yeşile dönüp CD'yi
+    /// tetiklediğinde, CD gerçekte PR'ın kodunu derlese bile run'ın
+    /// head_sha/head_branch alanları main'i gösteriyor. Canlıda ölçüldü
+    /// (pilot PR #16): analiz doğruydu ama rapor main'in alakasız bir
+    /// commit'ine düştü, PR sahibi hiç görmedi.
+    ///
+    /// Doğru bilgi API'nin hiçbir alanında yok — ölçüldü: run objesinde
+    /// pull_requests boş, referenced_workflows boş, check-run'lar da main'e
+    /// bağlı. Tek kaynak actions/checkout'un log satırı.
+    ///
+    /// Yalnızca ÇIPLAK bir SHA checkout edildiğinde eşleşiyor:
+    ///   [command]/usr/bin/git checkout --progress --force &lt;40 hane&gt;
+    /// Sıradan bir çalışmada hedef ref oluyor
+    /// (<c>refs/remotes/pull/16/merge</c>) ve eşleşme olmuyor — o durumda
+    /// çağıran taraf run'ın kendi head_sha'sını kullanmaya devam ediyor.
+    /// Yani bu metot yalnızca yanlış olduğunu BİLDİĞİMİZ durumu düzeltiyor.
+    /// </summary>
+    public static string? ExtractCheckedOutSha(string rawLog)
+    {
+        var match = CheckoutShaRegex.Match(rawLog);
+        return match.Success ? match.Groups["sha"].Value : null;
+    }
+
+    private static readonly Regex CheckoutShaRegex = new(
+        @"git checkout --progress --force (?<sha>[0-9a-f]{40})(?:\s|$)",
+        RegexOptions.Multiline,
+        matchTimeout: TimeSpan.FromSeconds(2));
+
     public static string StripTimestamp(string logLine)
     {
         return Regex.Replace(logLine, @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s", "");

@@ -105,10 +105,22 @@ public sealed class FixCoordinator
             return new FixRunResult(FixRunStatus.WorkspaceUnavailable, Message: message);
         }
 
-        var runId = await _github.FindLatestFailedRunAsync(request.Owner, request.Repo, branch);
+        // Önce PR'daki analiz yorumunun işaret ettiği run'a bakıyoruz, sonra
+        // dal aramasına düşüyoruz. İki sebep:
+        //
+        // 1) CD hataları dal aramasına HİÇ düşmüyor: workflow_run ile
+        //    tetiklenen çalışmalar varsayılan dala yazılıyor, PR'ın dalına
+        //    değil. Canlıda ölçüldü (pilot PR #16): CD patlamışken /fix
+        //    "bu dalda başarısız run yok" dedi.
+        // 2) Semantik olarak da doğrusu bu: /fix, insanın PR'da GÖRDÜĞÜ
+        //    analizin üzerinde çalışmalı, ayrı bir arama sonucunun değil.
+        var runId = await FindRunFromAnalysisCommentAsync(request)
+                    ?? await _github.FindLatestFailedRunAsync(request.Owner, request.Repo, branch);
+
         if (runId is null)
         {
-            var message = $"`{branch}` dalında başarısız bir CI run'ı bulunamadı — düzeltilecek bir hata yok.";
+            var message = $"Bu PR'da analiz yorumu yok ve `{branch}` dalında başarısız bir "
+                        + "run bulunamadı — düzeltilecek bir hata yok.";
             _log.LogWarning("{Message}", message);
             await PostAsync(request, message);
             return new FixRunResult(FixRunStatus.NoFailedRun, Message: message);
@@ -163,6 +175,30 @@ public sealed class FixCoordinator
     /// bu bloğu taşımayan eski bir sürümde yazılmış olabilir. Hepsinin doğru
     /// cevabı aynı — "veri yok, analizi kendin yap".
     /// </summary>
+    /// <summary>
+    /// PR'daki en yeni analiz yorumunun run'ı. Okunamazsa null döner ve
+    /// çağıran taraf dal aramasına düşer — bu arama bir kolaylık, zorunluluk
+    /// değil.
+    /// </summary>
+    private async Task<long?> FindRunFromAnalysisCommentAsync(FixRequest request)
+    {
+        try
+        {
+            var runId = await _commenter.FindLatestAnalysisRunIdAsync(
+                request.Owner, request.Repo, request.PullRequestNumber);
+
+            if (runId is long id)
+                _log.LogInformation("PR'daki analiz yorumu run {RunId}'i işaret ediyor.", id);
+
+            return runId;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "PR yorumlarından run id okunamadı; dal araması yapılacak.");
+            return null;
+        }
+    }
+
     private async Task<AnalysisResult?> LoadStoredAnalysisAsync(FixRequest request, long runId)
     {
         try

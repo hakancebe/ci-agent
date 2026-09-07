@@ -587,4 +587,33 @@ public class ReportServiceTests
         Assert.Contains("Elle inceleme gerekiyor", body);
         Assert.DoesNotContain("Kök Neden", body);
     }
+    // --- Marker'dan run id ------------------------------------------------
+    // /fix, PR'daki analiz yorumunun işaret ettiği run'ı bulmak için kullanıyor.
+    // CD hataları dal aramasına düşmediği için bu tek çıkış yolu.
+
+    [Fact]
+    public void TryParseRunId_ReadsTheRunIdFromTheMarker()
+    {
+        var body = ReportService.BuildMarker(34121779063) + "\n## CiAgent — Analiz";
+
+        Assert.Equal(34121779063, ReportService.TryParseRunId(body));
+    }
+
+    [Fact]
+    public void TryParseRunId_ReturnsNull_ForCommentWithoutMarker()
+    {
+        Assert.Null(ReportService.TryParseRunId("sıradan bir yorum"));
+        Assert.Null(ReportService.TryParseRunId(null));
+        Assert.Null(ReportService.TryParseRunId(""));
+    }
+
+    [Fact]
+    public void TryParseRunId_IgnoresTheFixMarker_WhichIsADifferentThing()
+    {
+        // /fix kendi yorumunu "ci-agent-fix:" ile işaretliyor; o bir yorum
+        // id'si, run id'si değil. Karıştırılırsa /fix var olmayan bir run'ı
+        // analiz etmeye çalışır.
+        Assert.Null(ReportService.TryParseRunId("<!-- ci-agent-fix:5570747602 -->"));
+    }
+
 }
