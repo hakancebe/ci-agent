@@ -15,14 +15,33 @@ public static class LogParser
     public static WorkflowJobStep? FindFailedStep(WorkflowJob job)
     {
         // conclusion da null olabildiği için "Conclusion?" yapısı kullanıldı
-        return job.Steps?.FirstOrDefault(s => s.Conclusion?.StringValue == "failure");
+        return job.Steps?.FirstOrDefault(s => s.Conclusion?.StringValue == "failure")
+               ?? FindCancelledStep(job);
     }
 
     public static List<WorkflowJobStep> FindFailedSteps(WorkflowJob job)
     {
-        return job.Steps?.Where(s => s.Conclusion?.StringValue == "failure").ToList()
-               ?? new List<WorkflowJobStep>();
+        var failed = job.Steps?.Where(s => s.Conclusion?.StringValue == "failure").ToList()
+                     ?? new List<WorkflowJobStep>();
+
+        if (failed.Count == 0 && FindCancelledStep(job) is WorkflowJobStep cancelled)
+            failed.Add(cancelled);
+
+        return failed;
     }
+
+    /// <summary>
+    /// Zaman aşımına uğrayan adım "failure" değil "cancelled" dönüyor —
+    /// canlıda ölçüldü (pilot CD run 34127272978): `timeout-minutes` ile biten
+    /// job'da hem job hem adım conclusion=cancelled aldı. Başarısız adım
+    /// aranırken bu göz ardı edildiği için takılan bir deploy'dan hiç
+    /// ErrorContext üretilemiyordu.
+    ///
+    /// Yalnızca gerçekten başarısız adım YOKKEN devreye giriyor: bir adım
+    /// patladığında sonrakiler de iptal edilir ve onlar sebep değil sonuçtur.
+    /// </summary>
+    private static WorkflowJobStep? FindCancelledStep(WorkflowJob job) =>
+        job.Steps?.FirstOrDefault(s => s.Conclusion?.StringValue is "cancelled" or "timed_out");
     // IReadOnlyList<CheckRunAnnotation> liste sadece okuanbilir değiştirilemez
     public static List<CheckRunAnnotation> FilterAnnotations(IReadOnlyList<CheckRunAnnotation> annotations)
     {
@@ -390,6 +409,13 @@ public static class LogParser
     {
         if (Regex.IsMatch(message, @"^NU\d")) return FailureKind.Restore;
         if (Regex.IsMatch(message, @"^(CS|NETSDK|MSB)\d")) return FailureKind.Compiler;
+
+        // Runner'ın zaman aşımı/iptal satırı. Ayrı tip olması raporu ve
+        // prompt'u okunur yapıyor: insan "Generic" yerine "Timeout" görüyor,
+        // model de bunun bir kod hatası olmadığını baştan biliyor.
+        if (message.Contains("The operation was canceled", StringComparison.OrdinalIgnoreCase))
+            return FailureKind.Timeout;
+
         return FailureKind.Generic;
     }
 

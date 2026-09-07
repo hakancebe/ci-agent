@@ -131,6 +131,27 @@ public class FixReportTests
     }
 
     [Fact]
+    public void BuildBody_DoesNotGiveTestFileAdvice_WhenRejectionWasNotAboutTests()
+    {
+        // Canlıda ölçüldü: bir CD hatasında reddedilen dosya
+        // .github/workflows/cd.yml'di, sebep ".cs değil"di — ama rapor
+        // "dosya gerçekten bir test değilse adını gözden geçirin" diyordu.
+        // Alakasız tavsiye, insanı yanlış yere bakmaya yönlendiriyor.
+        var outcome = new FixOutcome(
+            FixStatus.FilesRejected,
+            "Hatanın işaret ettiği dosyaların tümü düzenleme politikası dışında.",
+            [], 0,
+            RejectedPaths: [new RejectedPath(
+                ".github/workflows/cd.yml",
+                "yalnızca .cs dosyaları düzenlenebilir: '.github/workflows/cd.yml'")]);
+
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
+
+        Assert.Contains(".github/workflows/cd.yml", body);
+        Assert.DoesNotContain("dosya gerçekten bir test değilse", body);
+    }
+
+    [Fact]
     public void BuildBody_SaysNothingWasAttempted_WhenAnalysisSaidNotFixable()
     {
         var outcome = new FixOutcome(

@@ -9,6 +9,10 @@ public enum FailureKind
     Test,
     Compiler,
     Restore,
+
+    /// <summary>Adım zaman aşımına uğradı ya da iptal edildi.</summary>
+    Timeout,
+
     Generic
 }
 

@@ -113,12 +113,19 @@ public static class FixReport
                 + "Analiz yorumunda bir dosya:satır varsa yolun repo kökünden itibaren doğru "
                 + "verildiğini kontrol edin; kalan durumlarda hatayı elle inceleyin."),
 
+            // Tavsiye metni eskiden hep "bu bir test dosyası" varsayıyordu ve
+            // canlıda yanlış çıktı: bir CD hatasında reddedilen dosya
+            // `.github/workflows/cd.yml`'di, red sebebi ".cs değil"di, ama
+            // kullanıcıya "dosya gerçekten bir test değilse adını gözden
+            // geçirin" deniyordu. Artık tek bir sebep varsayılmıyor —
+            // hangi dosyanın neden atlandığı zaten aşağıda listeleniyor.
             FixStatus.FilesRejected => (
                 "Hatanın işaret ettiği dosyaların tümü `/fix`'in düzenleme politikası dışında; "
                 + "**hiçbir değişiklik yapılmadı**.",
-                "Test dosyaları (`*Tests.cs`, `tests/` altı) ve `.github/` altı bilerek korunuyor. "
-                + "Düzeltmeyi elle yapın; dosya gerçekten bir test değilse adını veya bulunduğu "
-                + "dizini gözden geçirin."),
+                "Hangi dosyanın neden atlandığı aşağıda yazılı. `/fix` yalnızca `.cs` kaynak "
+                + "dosyalarını düzenliyor; test dosyaları (`*Tests.cs`, `tests/` altı) ve "
+                + "`.github/` altı bilerek korunuyor — agent'ın kendi tetikleyicilerini ya da "
+                + "kendi sınavını değiştirebilmesi kabul edilemez. Düzeltmeyi elle yapın."),
 
             FixStatus.NotAutomaticallyFixable => (
                 "Analiz, doğru düzeltmenin **koddan belirlenemediğini** bildirdi; "

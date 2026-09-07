@@ -44,10 +44,44 @@ public static class FailureGrouper
     public static List<FailureGroup> Group(IEnumerable<Failure> failures)
     {
         return failures
-            .GroupBy(f => (f.Kind, f.FilePath, f.LineNumber, Message: Normalize(f.Message)))
+            .GroupBy(f => (
+                f.Kind, f.FilePath, f.LineNumber,
+                Message: Normalize(f.Message),
+                // Kimliksiz mesajlarda job+adım da anahtara giriyor, yani ayrı
+                // job'lardaki failure'lar birleşmiyor.
+                Scope: IsIdentityless(f.Message) ? $"{f.JobName}\u0000{f.StepName}" : null))
             .Select(g => new FailureGroup(g.First(), g.ToList()))
             .ToList();
     }
+
+    /// <summary>
+    /// Mesaj hangi hatanın olduğunu SÖYLEMİYOR mu? GitHub runner'ının
+    /// "Process completed with exit code N" satırı yalnızca bir şeyin
+    /// patladığını bildiriyor; hangi şey olduğunu değil.
+    ///
+    /// Neden önemli: canlıda ölçüldü (pilot CD run 34127272978). İki tamamen
+    /// farklı job — biri docker build hatası, diğeri çıplak `exit 1` — bu aynı
+    /// metni üretti. Gruplayıcı ikisini TEK hata + 2 tekrar saydı ve model
+    /// ikisine ORTAK bir kök neden uydurdu: "Dockerfile... hem şu hem bu
+    /// job'ın başarısız olmasının temel nedenidir." Sessiz job'ın Dockerfile
+    /// ile hiçbir ilgisi yoktu.
+    ///
+    /// Ham log İKİSİNİ de içeriyordu; model yapılandırılmış özet ham kanıtla
+    /// çeliştiğinde ÖZETE uydu. Yani yanlış gruplama, doğru veriden güçlü
+    /// çıkıyor.
+    ///
+    /// Az gruplamak çok gruplamaktan iyi: SystemPrompt zaten modelden kök
+    /// nedene göre birleştirmesini istiyor, yani ayrı görünen iki kayıt yine
+    /// tek analize inebilir. Ama yanlış birleştirilmiş iki kayıttan model
+    /// olmayan bir ortak sebep üretiyor ve bu rapora yazılıp insana
+    /// gösteriliyor.
+    /// </summary>
+    private static bool IsIdentityless(string message) =>
+        IdentitylessMessage.IsMatch(Normalize(message));
+
+    private static readonly Regex IdentitylessMessage = new(
+        @"^(Process completed with exit code \d+|The operation was canceled)\.?$",
+        RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
 
     private static string Normalize(string message) =>
         Whitespace.Replace(message, " ").Trim();

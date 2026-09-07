@@ -167,6 +167,79 @@ public class CiAnalysisPipelineTests
 
     // --- Testler ---------------------------------------------------------
 
+    // --- Zaman aşımı / iptal ------------------------------------------------
+    // Canlıda ölçüldü (pilot CD run 34127272978): timeout-minutes ile biten job
+    // conclusion=cancelled aldı ve "failure" filtresine hiç düşmedi. Takılan bir
+    // deploy agent'ın gözünde yoktu.
+
+    private static WorkflowJob CancelledJob(long id, string name, string stepName) =>
+        new(id: id, runId: 1, runUrl: "", nodeId: "", headSha: "sha-abc", url: "", htmlUrl: "",
+            status: WorkflowJobStatus.Completed,
+            conclusion: WorkflowJobConclusion.Cancelled,
+            createdAt: DateTimeOffset.UtcNow, startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: name,
+            steps: new List<WorkflowJobStep>
+            {
+                new(name: stepName,
+                    status: WorkflowJobStatus.Completed,
+                    conclusion: WorkflowJobConclusion.Cancelled,
+                    number: 1, startedAt: DateTimeOffset.UtcNow, completedAt: DateTimeOffset.UtcNow)
+            },
+            checkRunUrl: "", labels: new List<string>());
+
+    private const string TimeoutLog = """
+    ##[group]Run sleep 120
+    sleep 120
+    ##[endgroup]
+    ##[error]The operation was canceled.
+    """;
+
+    [Fact]
+    public async Task RunAsync_AnalysesCancelledJobs_WhenNothingElseFailed()
+    {
+        var gateway = new FakeGateway
+        {
+            Jobs = { CancelledJob(10, "deploy", "Zaman aşımına kadar bekle") },
+            LogsByJobId = { [10] = TimeoutLog }
+        };
+        var report = new RecordingReport();
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), report)
+            .RunAsync("o", "r", 99);
+
+        Assert.Equal(PipelineStatus.Reported, outcome.Status);
+        Assert.Equal(1, report.CallCount);
+        var failure = Assert.Single(outcome.Context!.Failures);
+        Assert.Equal(FailureKind.Timeout, failure.Kind);
+    }
+
+    [Fact]
+    public async Task RunAsync_IgnoresCancelledJobs_WhenARealFailureExists()
+    {
+        // Matrix'te bir job patlayınca kardeşleri iptal edilir; onlar sebep
+        // değil SONUÇ. Gerçek hata varken iptal edilenler rapora karışmamalı.
+        var gateway = new FakeGateway
+        {
+            Jobs =
+            {
+                Job(10, "build-test", "failure"),
+                CancelledJob(11, "deploy", "Zaman aşımına kadar bekle")
+            },
+            LogsByJobId =
+            {
+                [10] = TestLog("CalcTests.Add", "src/Calc.cs", 12),
+                [11] = TimeoutLog
+            }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.All(outcome.Context!.Failures, f => Assert.NotEqual(FailureKind.Timeout, f.Kind));
+        Assert.DoesNotContain(11, gateway.LogCalls);
+    }
+
     // --- Raporlanan commit ------------------------------------------------
     // workflow_run ile tetiklenen çalışmalarda run'ın head_sha'sı varsayılan
     // dalı gösteriyor; job başka bir commit'i derlemiş olabiliyor. Canlıda
