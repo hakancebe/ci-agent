@@ -210,4 +210,73 @@ public class FixPolicyTests
 
         Assert.Null(FixPolicy.RejectPlaceholderEdit(edit, ["bbb"]));
     }
+
+    // --- Yorumdan çıkarma sayacı ----------------------------------------
+
+    [Fact]
+    public void UncommentedCodeLineCount_CountsRevivedLineCommentBlock()
+    {
+        // Yorumdaki sınıf tanımı diriltiliyor (pilot repodaki GizliMetodSahibi vakası).
+        var edit = Edit("src/A.cs",
+            oldText:
+                "// public class GizliMetodSahibi\n" +
+                "// {\n" +
+                "//     public void GizliMetod() { }\n" +
+                "// }",
+            newText:
+                "public class GizliMetodSahibi\n" +
+                "{\n" +
+                "    public void GizliMetod() { }\n" +
+                "}");
+
+        Assert.Equal(4, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
+    public void UncommentedCodeLineCount_HandlesBlockCommentDelimiters()
+    {
+        var edit = Edit("src/A.cs",
+            oldText:
+                "/*\n" +
+                "public class Gizli\n" +
+                "{\n" +
+                "}\n" +
+                "*/",
+            newText:
+                "public class Gizli\n" +
+                "{\n" +
+                "}");
+
+        Assert.Equal(3, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
+    public void UncommentedCodeLineCount_ZeroForOrdinaryTypoFix()
+    {
+        var edit = Edit("src/A.cs", "return a + bbb;", "return a + b;");
+
+        Assert.Equal(0, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
+    public void UncommentedCodeLineCount_ZeroWhenCommentStaysComment()
+    {
+        // Yorum yorumda kaldıysa "yorumdan çıkarma" yok.
+        var edit = Edit("src/A.cs",
+            oldText: "int x = 1;\n// TODO: sonra bak",
+            newText: "int x = 2;\n// TODO: sonra bak");
+
+        Assert.Equal(0, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
+    public void UncommentedCodeLineCount_IgnoresProseCommentThatDoesNotBecomeCode()
+    {
+        // Açıklama yorumu new'de canlı koda dönüşmüyor; sayılmamalı.
+        var edit = Edit("src/A.cs",
+            oldText: "// bu metot toplama yapar\nreturn a - b;",
+            newText: "return a + b;");
+
+        Assert.Equal(0, FixPolicy.UncommentedCodeLineCount(edit));
+    }
 }

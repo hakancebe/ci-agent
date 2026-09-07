@@ -11,6 +11,13 @@ public static class FixReport
 {
     public static string BuildMarker(long commentId) => $"<!-- ci-agent-fix:{commentId} -->";
 
+    /// <summary>
+    /// Kaç satır yorumdan çıkarılınca rapora uyarı düşülür. Tek satır (ör. bir
+    /// <c>using</c>) genelde zararsız; asıl risk bir bloğun (sınıf/metot)
+    /// diriltilmesi. Eşik "birden fazla satır"da.
+    /// </summary>
+    private const int UncommentWarnThreshold = 2;
+
     public static string BuildBody(FixOutcome outcome, bool committed, long commentId)
     {
         var sb = new StringBuilder();
@@ -58,6 +65,20 @@ public static class FixReport
         sb.AppendLine();
         sb.AppendLine($"**Ne yapıldı:** {outcome.Summary}");
         sb.AppendLine();
+
+        // Yorumdan çıkarma işareti. Bloklamıyoruz (bkz. FixPolicy) ama insan
+        // diff'e bakarken bunu bilsin: yorumun neden konduğu koddan görülmüyor.
+        // /fix --commit ile inceleme atlanmışsa uyarı daha da değerli.
+        var uncommented = outcome.AppliedEdits.Sum(FixPolicy.UncommentedCodeLineCount);
+        if (uncommented >= UncommentWarnThreshold)
+        {
+            sb.AppendLine(
+                $"> ⚠️ Bu düzeltme **{uncommented} satırı yorumdan çıkarıp canlı koda çeviriyor**. "
+                + "O kodun neden yoruma alındığı buradan bilinemez; "
+                + (committed ? "commit'lenen" : "aşağıdaki")
+                + " değişikliğin bilerek kapatılmış bir kodu diriltmediğinden emin olun.");
+            sb.AppendLine();
+        }
 
         if (outcome.Attempts > 1)
         {

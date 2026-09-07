@@ -249,6 +249,82 @@ public static class FixPolicy
         return introduced;
     }
 
+    // --- Yorumdan çıkarma işareti ---------------------------------------
+    //
+    // RejectPlaceholderEdit'in YÖN karşıtı. O, "kodu yoruma alıp hatayı
+    // gizleme" hamlesini reddeder. Bu ise "yorumdaki kodu diriltme" hamlesini
+    // yalnızca SAYAR — bloklamaz. Sebep: kodun neden yorumlandığı repodan
+    // bilinemez ve çoğu zaman meşru bir düzeltmedir (geliştirici geçici
+    // kapatmış). Ama /fix --commit ile inceleme atlanırsa insanın gözden
+    // kaçırmaması gereken bir şey; rapor (FixReport) bunu ayrıca yazsın diye
+    // buradan ölçülüyor. Ölçülmüş bir kötüye kullanım gözlenirse sert kurala
+    // dönebilir — şimdilik yalnızca işaret.
+
+    /// <summary>
+    /// Bu değişiklikte, <see cref="CodeEdit.OldText"/>'te YORUM olan kaç satır
+    /// <see cref="CodeEdit.NewText"/>'te canlı koda dönüşmüş? 0 = yorum açma yok.
+    /// Hem <c>//</c> satırları hem <c>/* ... */</c> bloğu içi sayılır.
+    /// </summary>
+    public static int UncommentedCodeLineCount(CodeEdit edit)
+    {
+        var revived = CommentedCodePayloads(edit.OldText);
+        if (revived.Count == 0)
+            return 0;
+
+        var liveNew = StripComments(edit.NewText)
+            .Replace("\r\n", "\n").Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Aynı gövdeden birden çok yorum satırı varsa her biri ayrı sayılır;
+        // ama new'de o gövde canlı olarak en az bir kez geçmeli.
+        return revived.Count(liveNew.Contains);
+    }
+
+    /// <summary>
+    /// Metindeki yorum satırlarının "kod gövdesi": yorum işaretleri (<c>//</c>,
+    /// <c>/*</c>, <c>*/</c>, satır başı <c>*</c>) soyulmuş ve trim'lenmiş.
+    /// Salt işaret satırları ve boş gövdeler atlanır. Tam parser değil —
+    /// "yorumdan çıkarılmış blok" durumunu yakalamaya yeten yaklaşık bir tarama.
+    /// </summary>
+    private static List<string> CommentedCodePayloads(string text)
+    {
+        var payloads = new List<string>();
+        var inBlock = false;
+
+        foreach (var raw in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            var t = raw.Trim();
+            string? body = null;
+
+            if (inBlock)
+            {
+                var end = t.IndexOf("*/", StringComparison.Ordinal);
+                if (end >= 0) { body = t[..end]; inBlock = false; }
+                else body = t;
+                body = body.TrimStart('*').Trim();
+            }
+            else if (t.StartsWith("//", StringComparison.Ordinal))
+            {
+                body = t[2..].Trim();
+            }
+            else if (t.StartsWith("/*", StringComparison.Ordinal))
+            {
+                var rest = t[2..];
+                var end = rest.IndexOf("*/", StringComparison.Ordinal);
+                if (end >= 0) rest = rest[..end];
+                else inBlock = true;
+                body = rest.TrimStart('*').Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(body))
+                payloads.Add(body);
+        }
+
+        return payloads;
+    }
+
     /// <summary>Değişikliğin içeriği kabul edilebilir mi? Sebep döner, sorun yoksa null.</summary>
     public static string? RejectEdit(CodeEdit edit)
     {
