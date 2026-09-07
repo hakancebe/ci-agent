@@ -106,7 +106,20 @@ public sealed class CiAnalysisPipeline
 
         // Tüm başarısız job'lar aynı commit'te (run tek bir SHA'ya bağlı) — kod çekme
         // ve raporlama için herhangi birinin HeadSha'sı yeterli.
-        var headSha = failedJobs[0].HeadSha;
+        //
+        // AMA: workflow_run ile tetiklenen çalışmalarda run'ın head_sha'sı
+        // varsayılan dalı gösteriyor, job gerçekte başka bir commit'i derlemiş
+        // olsa bile. Log'dan okunabiliyorsa gerçek commit'i tercih ediyoruz;
+        // aksi halde rapor alakasız bir commit'e düşüyor (bkz.
+        // LogParser.ExtractCheckedOutSha).
+        var reportedSha = failedJobs[0].HeadSha;
+        var headSha = LogParser.ExtractCheckedOutSha(jobLogs[0].RawLog) ?? reportedSha;
+
+        if (!string.Equals(headSha, reportedSha, StringComparison.OrdinalIgnoreCase))
+            _log.LogInformation(
+                "Run'ın bildirdiği commit {Reported} ama job {Actual} commit'ini checkout etmiş; "
+                + "rapor gerçek commit'e yazılacak.",
+                reportedSha, headSha);
 
         // Önbellek İKİ adım arasında paylaşılıyor: kesit çıkarma ile "test edilen
         // kodu getir" adımı sık sık aynı dosyayı ister ve iki kez indirmek boşuna

@@ -39,6 +39,29 @@ public sealed class PrCommenter
     }
 
     /// <summary>
+    /// PR'daki EN YENİ analiz yorumunun işaret ettiği run id'si; yoksa null.
+    ///
+    /// /fix eskiden "bu DALDA en son başarısız run" diye arıyordu. CD hataları
+    /// bu aramaya hiç düşmüyor: workflow_run ile tetiklenen çalışmalar
+    /// varsayılan dala yazılıyor, PR'ın dalına değil. Canlıda ölçüldü (pilot
+    /// PR #16): CD patladığı hâlde /fix "bu dalda başarısız run yok" dedi.
+    ///
+    /// Yorumdaki run'ı kullanmak ayrıca daha doğru semantik: /fix, insanın
+    /// BAKTIĞI analizin üzerinde çalışmış oluyor.
+    /// </summary>
+    public async Task<long?> FindLatestAnalysisRunIdAsync(string owner, string repo, int prNumber)
+    {
+        var existing = await _client.Issue.Comment.GetAllForIssue(owner, repo, prNumber);
+
+        // Sondan başa: aynı PR'da birden fazla run analiz edilmiş olabilir,
+        // en yenisi geçerli olan.
+        return existing
+            .Reverse()
+            .Select(c => ReportService.TryParseRunId(c.Body))
+            .FirstOrDefault(id => id is not null);
+    }
+
+    /// <summary>
     /// Komutu aldığımızı belli eden tepki. İnsan "çalışıyor mu acaba" diye
     /// beklemesin; /fix bir-iki dakika sürebiliyor.
     /// </summary>

@@ -749,4 +749,45 @@ public class LogParserTests
         Assert.NotNull(context!.RawStepLog);
         Assert.Contains("NU1101", Assert.Single(context.Failures).Message);
     }
+    // --- Gerçekten checkout edilen commit -------------------------------
+    // Aşağıdaki iki log kesiti canlıdan alındı (pilot PR #16). workflow_run
+    // ile tetiklenen çalışmayı GitHub varsayılan dala yazıyor; job'ın
+    // gerçekte hangi commit'i derlediği yalnızca bu satırda görünüyor.
+
+    [Fact]
+    public void ExtractCheckedOutSha_FindsSha_WhenBareCommitCheckedOut()
+    {
+        // CD (workflow_run tetiklemeli) — gerçek log biçimi
+        var log = """
+        ##[group]Checking out the ref
+        [command]/usr/bin/git checkout --progress --force e7c838c8f7082ce21e4a09c3d1dd9d3091e562dd
+        Note: switching to 'e7c838c8f7082ce21e4a09c3d1dd9d3091e562dd'.
+        HEAD is now at e7c838c TEST: ikinci zorunlu ortam değişkeni
+        """;
+
+        Assert.Equal(
+            "e7c838c8f7082ce21e4a09c3d1dd9d3091e562dd",
+            LogParser.ExtractCheckedOutSha(log));
+    }
+
+    [Fact]
+    public void ExtractCheckedOutSha_ReturnsNull_ForOrdinaryRefCheckout()
+    {
+        // Sıradan CI (pull_request tetiklemeli) — hedef SHA değil ref.
+        // Burada run'ın kendi head_sha'sı zaten doğru, müdahale edilmemeli.
+        var log = """
+        ##[group]Checking out the ref
+        [command]/usr/bin/git checkout --progress --force refs/remotes/pull/16/merge
+        HEAD is now at 7142761 Merge e7c838c8f7082ce21e4a09c3d1dd9d3091e562dd into fc6f425a
+        """;
+
+        Assert.Null(LogParser.ExtractCheckedOutSha(log));
+    }
+
+    [Fact]
+    public void ExtractCheckedOutSha_ReturnsNull_WhenNoCheckoutInLog()
+    {
+        Assert.Null(LogParser.ExtractCheckedOutSha("##[group]Run dotnet test\nFailed!"));
+    }
+
 }
