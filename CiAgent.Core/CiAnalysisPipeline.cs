@@ -169,6 +169,32 @@ public sealed class CiAnalysisPipeline
         // Hepsi toplanıyor; BuildErrorContext tümünü tek ErrorContext'te birleştiriyor.
         var failed = jobs.Where(j => j.Conclusion?.StringValue == "failure").ToList();
 
+        // Zaman aşımına uğrayan job "failure" değil "cancelled" dönüyor —
+        // canlıda ölçüldü (pilot CD run 34127272978): timeout-minutes ile
+        // biten job conclusion=cancelled aldı ve yukarıdaki filtreye hiç
+        // düşmedi. Takılan bir deploy agent'ın gözünde YOK demekti.
+        //
+        // Ama her cancelled job analiz edilmemeli: matrix'te bir job patlayınca
+        // kardeşleri de iptal ediliyor ve onlar sebep değil, SONUÇ. Bu yüzden
+        // iptal edilenlere yalnızca ORTADA BAŞKA BAŞARISIZ JOB YOKKEN
+        // bakılıyor — yani "tek olan biten şey bir takılmaydı" durumunda.
+        //
+        // Kullanıcının elle iptal ettiği run bu yola hiç girmiyor: o run
+        // conclusion=cancelled ile biter, agent yalnızca failure run'larda
+        // uyanır (bkz. WebhookParser).
+        if (failed.Count == 0)
+        {
+            failed = jobs
+                .Where(j => j.Conclusion?.StringValue is "cancelled" or "timed_out")
+                .ToList();
+
+            if (failed.Count > 0)
+                _log.LogInformation(
+                    "Başarısız job yok ama {Count} job iptal/zaman aşımı ile bitmiş; "
+                    + "takılma ihtimaline karşı bunlar analiz edilecek ({Names}).",
+                    failed.Count, string.Join(", ", failed.Select(j => j.Name)));
+        }
+
         if (failed.Count > 0)
             _log.LogInformation("Başarısız job sayısı: {Count} ({Names})",
                 failed.Count, string.Join(", ", failed.Select(j => j.Name)));

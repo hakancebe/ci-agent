@@ -790,4 +790,78 @@ public class LogParserTests
         Assert.Null(LogParser.ExtractCheckedOutSha("##[group]Run dotnet test\nFailed!"));
     }
 
+    // --- Zaman aşımı ------------------------------------------------------
+    // Canlıda ölçüldü (pilot CD run 34127272978): timeout-minutes ile biten
+    // job'da HEM job HEM adım conclusion=cancelled aldı. "failure" arayan
+    // filtreler bunu hiç görmüyordu, yani takılan bir deploy analiz
+    // edilemiyordu.
+
+    private static Octokit.WorkflowJob JobWithSteps(params (string Name, string Conclusion)[] steps) =>
+        new(id: 1, runId: 1, runUrl: "", nodeId: "", headSha: "sha", url: "", htmlUrl: "",
+            status: Octokit.WorkflowJobStatus.Completed,
+            conclusion: Octokit.WorkflowJobConclusion.Cancelled,
+            createdAt: DateTimeOffset.UtcNow, startedAt: DateTimeOffset.UtcNow,
+            completedAt: DateTimeOffset.UtcNow,
+            name: "olcum-takilan-adim",
+            steps: steps.Select((st, i) => new Octokit.WorkflowJobStep(
+                name: st.Name,
+                status: Octokit.WorkflowJobStatus.Completed,
+                conclusion: st.Conclusion switch
+                {
+                    "failure" => Octokit.WorkflowJobConclusion.Failure,
+                    "cancelled" => Octokit.WorkflowJobConclusion.Cancelled,
+                    _ => Octokit.WorkflowJobConclusion.Success
+                },
+                number: i + 1,
+                startedAt: DateTimeOffset.UtcNow, completedAt: DateTimeOffset.UtcNow)).ToList(),
+            checkRunUrl: "", labels: new List<string>());
+
+    [Fact]
+    public void FindFailedStep_FallsBackToCancelledStep_WhenNothingFailed()
+    {
+        var job = JobWithSteps(
+            ("Set up job", "success"),
+            ("Zaman aşımına kadar bekle", "cancelled"),
+            ("Complete job", "success"));
+
+        Assert.Equal("Zaman aşımına kadar bekle", LogParser.FindFailedStep(job)?.Name);
+    }
+
+    [Fact]
+    public void FindFailedStep_PrefersTheFailedStep_OverCancelledOnes()
+    {
+        // Bir adım patlayınca sonrakiler iptal edilir; onlar sebep değil sonuç.
+        var job = JobWithSteps(
+            ("Build", "failure"),
+            ("Test", "cancelled"));
+
+        Assert.Equal("Build", LogParser.FindFailedStep(job)?.Name);
+    }
+
+    [Fact]
+    public void BuildErrorContext_ClassifiesTimeoutSeparately_FromOrdinaryFailures()
+    {
+        // Gerçek log (pilot CD run 34127272978, olcum-takilan-adim job'ı)
+        var job = JobWithSteps(
+            ("Set up job", "success"),
+            ("Zaman aşımına kadar bekle", "cancelled"));
+
+        var log = """
+        ##[group]Run sleep 120
+        sleep 120
+        shell: /usr/bin/bash -e {0}
+        ##[endgroup]
+        ##[error]The operation was canceled.
+        """;
+
+        var ctx = LogParser.BuildErrorContext(job, Array.Empty<Octokit.CheckRunAnnotation>(), log);
+
+        Assert.NotNull(ctx);
+        var failure = Assert.Single(ctx!.Failures);
+        // "Generic" yerine "Timeout": insan raporda, model prompt'ta bunun bir
+        // kod hatası olmadığını doğrudan görsün.
+        Assert.Equal(FailureKind.Timeout, failure.Kind);
+        Assert.Contains("canceled", failure.Message!, StringComparison.OrdinalIgnoreCase);
+    }
+
 }

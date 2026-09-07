@@ -95,4 +95,78 @@ public class FailureGrouperTests
     {
         Assert.Empty(FailureGrouper.Group(Array.Empty<Failure>()));
     }
+    // --- Kimliksiz mesajlar ------------------------------------------------
+    // Canlıda ölçüldü (pilot CD run 34127272978): docker build hatası ile
+    // çıplak `exit 1` AYNI metni üretti ("Process completed with exit code 1"),
+    // gruplayıcı ikisini tek hata saydı, model de ikisine ORTAK bir kök neden
+    // uydurdu. Sessiz job'ın Dockerfile ile ilgisi yoktu.
+
+    private static Failure Generic(string message, string job, string step = "Run") =>
+        new()
+        {
+            Kind = FailureKind.Generic,
+            JobName = job,
+            StepName = step,
+            FilePath = null,
+            LineNumber = null,
+            Message = message
+        };
+
+    [Fact]
+    public void Group_DoesNotMergeIdentitylessFailuresFromDifferentJobs()
+    {
+        var failures = new[]
+        {
+            Generic("Process completed with exit code 1.", "olcum-docker-build"),
+            Generic("Process completed with exit code 1.", "olcum-sessiz-hata"),
+        };
+
+        var groups = FailureGrouper.Group(failures);
+
+        // Aynı metin ama aynı hata DEĞİL: bu mesaj neyin patladığını söylemiyor.
+        Assert.Equal(2, groups.Count);
+    }
+
+    [Fact]
+    public void Group_DoesNotMergeCancellationMessagesFromDifferentJobs()
+    {
+        var failures = new[]
+        {
+            Generic("The operation was canceled.", "deploy-a"),
+            Generic("The operation was canceled.", "deploy-b"),
+        };
+
+        Assert.Equal(2, FailureGrouper.Group(failures).Count);
+    }
+
+    [Fact]
+    public void Group_StillMergesIdentitylessFailures_WithinTheSameJobAndStep()
+    {
+        // Aynı job'ın aynı adımında iki kez aynı satır: bu gerçekten tekrar,
+        // prompt'u şişirmesin.
+        var failures = new[]
+        {
+            Generic("Process completed with exit code 1.", "deploy", "Smoke test"),
+            Generic("Process completed with exit code 1.", "deploy", "Smoke test"),
+        };
+
+        var group = Assert.Single(FailureGrouper.Group(failures));
+        Assert.Equal(2, group.Occurrences);
+    }
+
+    [Fact]
+    public void Group_StillMergesInformativeMessagesAcrossJobs()
+    {
+        // Regresyon koruması: mesaj gerçekten bir hatayı TARİF ediyorsa
+        // matrix birleştirmesi eskisi gibi çalışmalı.
+        var failures = new[]
+        {
+            Generic("NU1101: Unable to find package Yok.Boyle", "build (ubuntu)"),
+            Generic("NU1101: Unable to find package Yok.Boyle", "build (windows)"),
+        };
+
+        var group = Assert.Single(FailureGrouper.Group(failures));
+        Assert.Equal(2, group.Occurrences);
+    }
+
 }
