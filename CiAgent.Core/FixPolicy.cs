@@ -261,26 +261,60 @@ public static class FixPolicy
     // dönebilir — şimdilik yalnızca işaret.
 
     /// <summary>
-    /// Bu değişiklikte, <see cref="CodeEdit.OldText"/>'te YORUM olan kaç satır
-    /// <see cref="CodeEdit.NewText"/>'te canlı koda dönüşmüş? 0 = yorum açma yok.
-    /// Hem <c>//</c> satırları hem <c>/* ... */</c> bloğu içi sayılır.
+    /// Bu değişikliğin <see cref="CodeEdit.OldText"/>'ten kaç tane <b>kod
+    /// görünümlü yorum satırı</b> kaldırdığı — <see cref="CodeEdit.NewText"/>'te
+    /// canlı kod satırı sayısı artmışsa. 0 = yorumdan çıkarma yok.
+    ///
+    /// Soru bilinçli olarak "eski yorum gövdesi yeni kodda AYNEN var mı?"
+    /// değil: satır yorumdan çıkarılırken değiştirilebiliyor
+    /// (<c>private</c> → <c>public</c>) ve birebir eşleşme aranınca sayı
+    /// düşük çıkıp uyarı eşiğinin altına kayabiliyordu. Bunun yerine yalnızca
+    /// "yorumdaydı, kod görünümlüydü, artık yorumda değil" sayılıyor.
     /// </summary>
     public static int UncommentedCodeLineCount(CodeEdit edit)
     {
-        var revived = CommentedCodePayloads(edit.OldText);
-        if (revived.Count == 0)
+        var oldCodeComments = CommentedCodePayloads(edit.OldText).Where(LooksLikeCode).ToList();
+        if (oldCodeComments.Count == 0)
             return 0;
 
-        var liveNew = StripComments(edit.NewText)
-            .Replace("\r\n", "\n").Split('\n')
-            .Select(l => l.Trim())
-            .Where(l => l.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
+        // Yeni metinde HÂLÂ yorumda olanları düş: kalan = bu edit'in yorumdan
+        // çıkardığı kod satırları. Eşleştirme gövde üzerinden ama yalnızca
+        // "yorum → yorum" tarafında; "yorum → canlı" tarafına hiç bakılmıyor.
+        foreach (var stillCommented in CommentedCodePayloads(edit.NewText).Where(LooksLikeCode))
+            oldCodeComments.Remove(stillCommented);
 
-        // Aynı gövdeden birden çok yorum satırı varsa her biri ayrı sayılır;
-        // ama new'de o gövde canlı olarak en az bir kez geçmeli.
-        return revived.Count(liveNew.Contains);
+        if (oldCodeComments.Count == 0)
+            return 0;
+
+        // Ölü bir yorum bloğunu SİLMEK de bu sayıyı şişirir. "Yorumdan çıkarma"
+        // ile "silme"yi ayırmak için: canlı kod satırı sayısı artmış olmalı.
+        if (LiveCodeLineCount(edit.NewText) <= LiveCodeLineCount(edit.OldText))
+            return 0;
+
+        return oldCodeComments.Count;
     }
+
+    /// <summary>
+    /// Yorum gövdesi düz açıklama değil de kod mu görünüyor? Güçlü işaretler:
+    /// <c>{ } ;</c> noktalaması ya da bir tür bildirimi anahtar kelimesi
+    /// (<c>class struct interface enum record namespace</c>). <c>public</c>,
+    /// <c>return</c>, <c>new</c> gibi zayıf kelimeler bilerek DIŞARIDA —
+    /// Türkçe/İngilizce düz yorumda da geçerler ("public API'yi bozma").
+    /// </summary>
+    private static bool LooksLikeCode(string commentBody) =>
+        commentBody.IndexOfAny(CodePunctuation) >= 0 || StrongDeclPattern.IsMatch(commentBody);
+
+    private static readonly char[] CodePunctuation = { '{', '}', ';' };
+
+    private static readonly Regex StrongDeclPattern = new(
+        @"(?<![A-Za-z0-9_])(class|struct|interface|enum|record|namespace)(?![A-Za-z0-9_])",
+        RegexOptions.Compiled);
+
+    /// <summary>Yorumları çıkardıktan sonra kalan boş olmayan satır sayısı.</summary>
+    private static int LiveCodeLineCount(string text) =>
+        StripComments(text)
+            .Replace("\r\n", "\n").Split('\n')
+            .Count(l => l.Trim().Length > 0);
 
     /// <summary>
     /// Metindeki yorum satırlarının "kod gövdesi": yorum işaretleri (<c>//</c>,

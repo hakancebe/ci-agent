@@ -259,6 +259,53 @@ public class FixPolicyTests
     }
 
     [Fact]
+    public void UncommentedCodeLineCount_CountsLinesEvenWhenModifiedDuringUncomment()
+    {
+        // Asıl kapanan açık: yorumdan çıkarılırken her satır değişse bile
+        // ("private" -> "public", "class" -> "sealed class") sayılmalı —
+        // eski birebir eşleşme aransaydı sayı eşiğin altına düşerdi.
+        var edit = Edit("src/A.cs",
+            oldText:
+                "// public class X\n" +
+                "// {\n" +
+                "//     private int Value = 0;\n" +
+                "// }",
+            newText:
+                "public sealed class X\n" +
+                "{\n" +
+                "    public int Value = 1;\n" +
+                "}");
+
+        Assert.Equal(4, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
+    public void UncommentedCodeLineCount_ZeroWhenDeletingDeadCommentBlockWithoutAddingCode()
+    {
+        // Ölü yorum bloğunu silmek "yorumdan çıkarma" değil; canlı kod artmıyor.
+        var edit = Edit("src/A.cs",
+            oldText:
+                "int x = 1;\n" +
+                "// public class Dead\n" +
+                "// {\n" +
+                "// }",
+            newText: "int x = 1;");
+
+        Assert.Equal(0, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
+    public void UncommentedCodeLineCount_IgnoresProseCommentWithWeakKeyword()
+    {
+        // "public" düz yorumda da geçer; tek başına "kod görünümlü" saymamalı.
+        var edit = Edit("src/A.cs",
+            oldText: "// public API'yi bozma, dikkatli ol\nreturn a - b;",
+            newText: "return a + b;");
+
+        Assert.Equal(0, FixPolicy.UncommentedCodeLineCount(edit));
+    }
+
+    [Fact]
     public void UncommentedCodeLineCount_ZeroWhenCommentStaysComment()
     {
         // Yorum yorumda kaldıysa "yorumdan çıkarma" yok.
