@@ -15,6 +15,8 @@ public class FixCoordinatorTests
     {
         public Task<IReadOnlyList<WorkflowJob>> GetJobsAsync(string o, string r, long id)
             => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
+        public Task<WorkflowInfo?> GetWorkflowInfoAsync(string o, string r, long id)
+            => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
         public Task<IReadOnlyList<CheckRunAnnotation>> GetAnnotationsAsync(string o, string r, long id)
             => throw new InvalidOperationException("GitHub'a hiç gidilmemeliydi");
         public Task<string> DownloadJobLogAsync(string o, string r, long id)

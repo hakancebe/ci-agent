@@ -27,6 +27,12 @@ public class CiAnalysisPipelineTests
         public Task<IReadOnlyList<WorkflowJob>> GetJobsAsync(string owner, string repo, long runId)
             => Task.FromResult<IReadOnlyList<WorkflowJob>>(Jobs);
 
+        /// <summary>null bırakılırsa "workflow bilgisi alınamadı" yolu sınanır.</summary>
+        public WorkflowInfo? Workflow { get; set; }
+
+        public Task<WorkflowInfo?> GetWorkflowInfoAsync(string owner, string repo, long runId)
+            => Task.FromResult(Workflow);
+
         public Task<IReadOnlyList<CheckRunAnnotation>> GetAnnotationsAsync(string owner, string repo, long jobId)
         {
             AnnotationCalls.Add(jobId);
@@ -160,6 +166,47 @@ public class CiAnalysisPipelineTests
     """;
 
     // --- Testler ---------------------------------------------------------
+
+    // --- Workflow dosyası ------------------------------------------------
+
+    [Fact]
+    public async Task RunAsync_AttachesWorkflowInfo_SoTheModelNeedNotGuessTheFileName()
+    {
+        // Deploy/yapılandırma hatalarında düzeltilecek dosya workflow'un
+        // kendisidir ve adı LOGDAN ÇIKARILAMAZ. Canlı ölçümde model bu yüzden
+        // olmayan bir ad uydurmuştu (".github/workflows/deploy.yml").
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "deploy", "failure", stepName: "Smoke test") },
+            LogsByJobId = { [10] = RestoreLog },
+            Workflow = new WorkflowInfo("CD", ".github/workflows/cd.yml")
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.NotNull(outcome.Context);
+        Assert.Equal(".github/workflows/cd.yml", outcome.Context!.Workflow?.Path);
+        Assert.Equal("CD", outcome.Context.Workflow?.Name);
+    }
+
+    [Fact]
+    public async Task RunAsync_StillReports_WhenWorkflowInfoIsUnavailable()
+    {
+        // Bu bilgi "olsa iyi olur" seviyesinde: alınamazsa analiz durmamalı.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "deploy", "failure", stepName: "Smoke test") },
+            LogsByJobId = { [10] = RestoreLog },
+            Workflow = null
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Equal(PipelineStatus.Reported, outcome.Status);
+        Assert.Null(outcome.Context!.Workflow);
+    }
 
     [Fact]
     public async Task RunAsync_ReturnsNoFailedJobs_WhenEveryJobSucceeded()

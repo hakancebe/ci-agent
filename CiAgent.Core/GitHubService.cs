@@ -37,6 +37,22 @@ public class GitHubService : IGitHubGateway
   public Task<WorkflowRun> GetRunAsync(string owner, string repo, long runId)
    => _client.Actions.Workflows.Runs.Get(owner, repo, runId);
 
+  // Hatanın hangi workflow dosyasından geldiğini analiz katmanına taşımak için.
+  // Çağrı patlarsa null dönüyoruz: bu bilgi olmadan da analiz yapılabilmeli,
+  // eksikliği yüzünden tüm rapor kaybedilmemeli.
+  public async Task<WorkflowInfo?> GetWorkflowInfoAsync(string owner, string repo, long runId)
+  {
+    try
+    {
+      var run = await GetRunAsync(owner, repo, runId);
+      return new WorkflowInfo(run.Name, run.Path);
+    }
+    catch (ApiException)
+    {
+      return null;
+    }
+  }
+
   public async Task<IReadOnlyList<WorkflowJob>> GetJobsAsync(string owner, string repo, long runId)
   {
     var response = await _client.Actions.Workflows.Jobs.List(owner, repo, runId);

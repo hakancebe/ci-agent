@@ -76,6 +76,15 @@ public class LlmService
         - Patlayan bir testte "Test edilen kod" bölümü verilmişse, hata neredeyse
           her zaman ORADADIR, testte değil. affectedFile'ı o dosya yap ve
           düzeltmeyi orada öner. Testin beklentisini değiştirmeyi ÖNERME.
+        - Hata koddan DEĞİL, adımın yapılandırmasından kaynaklanıyorsa (container'a
+          geçirilmeyen ortam değişkeni, eksik secret, yanlış komut argümanı,
+          eksik dosya yolu) düzeltilecek yer workflow dosyasıdır. Böyle bir
+          durumda affectedFile olarak, prompt'ta verilen "Bu run'ı tanımlayan
+          workflow dosyası" yolunu AYNEN yaz. Başka bir workflow dosyası adı
+          UYDURMA; o yol verilmemişse affectedFile'ı null bırak.
+        - affectedFile her zaman repo kökünden göreli olmalı. Logda geçen mutlak
+          runner yollarını (/home/runner/work/... ile başlayanlar) olduğu gibi
+          yazma; repo kökünden sonraki kısmı kullan.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
@@ -506,6 +515,16 @@ public class LlmService
         // hata sayısı kırpıldıysa ilk N GRUP gösteriliyor.
         var allGroups = FailureGrouper.Group(ctx.Failures);
         var shownGroups = budget.MaxFailures is int max ? allGroups.Take(max).ToList() : allGroups;
+
+        // Hangi workflow dosyasının patladığı. Yapılandırma kaynaklı hatalarda
+        // (eksik ortam değişkeni, eksik secret) düzeltilecek yer burasıdır ve
+        // model bunu logdan ÇIKARAMAZ — verilmezse ad uydurur.
+        if (ctx.Workflow is { Path: { Length: > 0 } workflowPath })
+        {
+            var workflowName = string.IsNullOrWhiteSpace(ctx.Workflow.Name)
+                ? "" : $" (workflow adı: {ctx.Workflow.Name})";
+            sb.AppendLine($"Bu run'ı tanımlayan workflow dosyası: {workflowPath}{workflowName}");
+        }
 
         sb.AppendLine($"Job adı: {ctx.JobName}");
         sb.AppendLine($"Başarısız adım: {ctx.FailedStepName}");
