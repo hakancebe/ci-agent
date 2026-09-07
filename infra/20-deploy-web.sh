@@ -125,7 +125,7 @@ ENV_VARS=(
     "GITHUB_WEBHOOK_SECRET=secretref:github-webhook-secret"
     "AZURE_OPENAI_ENDPOINT=$AZURE_OPENAI_ENDPOINT"
     "AZURE_OPENAI_DEPLOYMENT=$AZURE_OPENAI_DEPLOYMENT"
-    "CI_AGENT_WATCHED_WORKFLOWS=${CI_AGENT_WATCHED_WORKFLOWS:-CI}"
+    "CI_AGENT_WATCHED_WORKFLOWS=${CI_AGENT_WATCHED_WORKFLOWS:-CI,CD}"
 )
 
 # İzleme opsiyonel: bağlantı dizesi yoksa servis izlemesiz ama sorunsuz çalışır.

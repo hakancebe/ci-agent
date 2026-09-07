@@ -5,6 +5,18 @@ public class ErrorContext
     /// <summary>Başarısız job(lar)ın adı; birden fazlaysa virgülle birleştirilmiş.</summary>
     public required string JobName { get; init; }
 
+    /// <summary>
+    /// Hatanın geldiği workflow'un görünen adı ("CD") ve repodaki dosya yolu
+    /// (".github/workflows/cd.yml"). Bilinmiyorsa null.
+    ///
+    /// Neden var: canlı ölçümde model, deploy hatasında düzeltilecek dosya olarak
+    /// ".github/workflows/deploy.yml" dedi — repoda öyle bir dosya YOK, gerçeği
+    /// cd.yml'di. Doğru ad zaten webhook payload'ında ve Actions API'sinde
+    /// duruyordu; prompt'a hiç girmediği için model boşluğu uydurarak doldurdu.
+    /// Bilgiyi vermek, "uydurma" talimatı yazmaktan daha etkili.
+    /// </summary>
+    public WorkflowInfo? Workflow { get; set; }
+
     /// <summary>Başarısız adım(lar)ın adı; birden fazlaysa virgülle birleştirilmiş.</summary>
     public required string FailedStepName { get; init; }
 

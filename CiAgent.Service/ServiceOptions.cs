@@ -24,8 +24,7 @@ internal sealed class ServiceOptions
     public bool UseManagedIdentityForOpenAi => string.IsNullOrWhiteSpace(AzureOpenAiKey);
 
     /// <summary>
-    /// İzlenecek workflow adları (virgülle ayrılmış). Varsayılan "CI" — eski
-    /// ci-agent.yml'deki `workflows: ["CI"]` filtresinin birebir karşılığı.
+    /// İzlenecek workflow adları (virgülle ayrılmış). Varsayılan "CI,CD".
     /// Boş verilirse tüm workflow'lar izlenir.
     /// </summary>
     public required IReadOnlyCollection<string> WatchedWorkflows { get; init; }
@@ -102,7 +101,10 @@ internal sealed class ServiceOptions
                 + "(dosya yolu) da verilebilir.");
         }
 
-        var watched = (config["CI_AGENT_WATCHED_WORKFLOWS"] ?? "CI")
+        // Varsayılan "CI,CD": görev tanımı CI'ın başından CD'nin sonuna kadar
+        // kapsam istiyor. Sadece "CI" olduğu sürece ayrı bir CD workflow'unun
+        // hatası sessizce görmezden geliniyordu.
+        var watched = (config["CI_AGENT_WATCHED_WORKFLOWS"] ?? "CI,CD")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToArray();
 

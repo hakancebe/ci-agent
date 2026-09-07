@@ -97,6 +97,11 @@ public sealed class CiAnalysisPipeline
             return new PipelineOutcome(PipelineStatus.NoAnalyzableFailure);
         }
 
+        // Hangi workflow dosyasından geldiği: yapılandırma/deploy hatalarında
+        // modelin işaret edeceği dosya bu. Tek ekstra API çağrısı; başarısız
+        // olursa null kalır ve analiz eskisi gibi devam eder.
+        context.Workflow = await _github.GetWorkflowInfoAsync(owner, repo, runId);
+
         LogContext(context);
 
         // Tüm başarısız job'lar aynı commit'te (run tek bir SHA'ya bağlı) — kod çekme

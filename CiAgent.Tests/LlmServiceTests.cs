@@ -469,6 +469,58 @@ public class LlmServiceTests
         Assert.DoesNotContain("İlgili kod (satır", prompt);
     }
 
+    // --- Workflow dosyası ------------------------------------------------
+    // Canlı ölçümde model, deploy hatasında ".github/workflows/deploy.yml"
+    // dedi; repoda öyle bir dosya yoktu (gerçeği cd.yml). Adı logdan çıkarmak
+    // MÜMKÜN DEĞİL, o yüzden uydurdu. Bu testler doğru adın prompt'a
+    // girdiğini sabitliyor.
+
+    [Fact]
+    public void BuildPrompt_NamesTheWorkflowFile_WhenKnown()
+    {
+        var ctx = Context();
+        ctx.Workflow = new WorkflowInfo("CD", ".github/workflows/cd.yml");
+
+        var prompt = LlmService.BuildPrompt(ctx);
+
+        Assert.Contains(".github/workflows/cd.yml", prompt);
+        Assert.Contains("workflow adı: CD", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_OmitsWorkflowLine_WhenUnknown()
+    {
+        // Workflow bilgisi alınamadıysa (API hatası) prompt'a boş/yanıltıcı
+        // bir satır girmemeli — model "verilmediyse null bırak" kuralını
+        // ancak satır hiç yoksa uygulayabilir.
+        var prompt = LlmService.BuildPrompt(Context());
+
+        Assert.DoesNotContain("Bu run'ı tanımlayan workflow dosyası", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_OmitsWorkflowLine_WhenPathIsEmpty()
+    {
+        var ctx = Context();
+        ctx.Workflow = new WorkflowInfo("CD", "");
+
+        var prompt = LlmService.BuildPrompt(ctx);
+
+        Assert.DoesNotContain("Bu run'ı tanımlayan workflow dosyası", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_StillNamesTheFile_WhenWorkflowNameMissing()
+    {
+        var ctx = Context();
+        ctx.Workflow = new WorkflowInfo(null, ".github/workflows/cd.yml");
+
+        var prompt = LlmService.BuildPrompt(ctx);
+
+        Assert.Contains(".github/workflows/cd.yml", prompt);
+        Assert.DoesNotContain("workflow adı:", prompt);
+    }
+
     [Fact]
     public void BuildPrompt_RendersPerFailureSnippets_WhenFailuresListPopulated()
     {
