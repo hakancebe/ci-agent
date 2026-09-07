@@ -177,7 +177,8 @@ app.MapPost("/webhooks/github", async (HttpRequest request, WorkQueue queue,
             };
         }
 
-        var outcome = WebhookParser.Parse(eventName, deliveryId, payload, opts.WatchedWorkflows);
+        var outcome = WebhookParser.Parse(
+            eventName, deliveryId, payload, opts.WatchedWorkflows, opts.AnalyzeCancelledRuns);
 
         if (outcome.Job is null)
         {
