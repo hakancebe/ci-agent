@@ -146,13 +146,16 @@ public class FixReportTests
     }
 
     [Fact]
-    public void BuildBody_MentionsRetry_WhenSecondAttemptSucceeded()
+    public void BuildBody_MentionsRetry_WithoutClaimingWhichStageFailed()
     {
         var outcome = new FixOutcome(FixStatus.Fixed, "düzeltildi", [Applied()], 2);
 
         var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
 
         Assert.Contains("2. denemede", body);
+        // İlk denemenin nerede patladığını (derleme/test/politika) bilmiyoruz;
+        // rapor da iddia etmemeli.
+        Assert.DoesNotContain("testleri geçemedi", body);
     }
 
     private static EditOutcome UncommentsABlock() =>

@@ -82,7 +82,14 @@ public static class FixReport
 
         if (outcome.Attempts > 1)
         {
-            sb.AppendLine($"> İlk deneme testleri geçemedi; {outcome.Attempts}. denemede tuttu.");
+            // "testleri geçemedi" demek yanıltıcıydı: ilk deneme derlemede de
+            // patlamış olabilir (test hiç koşmadan) ya da öneri politikaya
+            // takılmış olabilir. FixOutcome hangi aşamada olduğunu tutmuyor —
+            // burada yalnızca "ilk deneme tutmadı, geri bildirim sonrası
+            // ikincisi geçti" denebilir.
+            sb.AppendLine(
+                $"> İlk deneme tutmadı; hata modele geri bildirildikten sonra "
+                + $"{outcome.Attempts}. denemede geçti.");
             sb.AppendLine();
         }
 
