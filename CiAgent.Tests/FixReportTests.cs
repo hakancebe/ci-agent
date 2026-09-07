@@ -154,4 +154,42 @@ public class FixReportTests
 
         Assert.Contains("2. denemede", body);
     }
+
+    private static EditOutcome UncommentsABlock() =>
+        EditOutcome.Ok(new CodeEdit
+        {
+            File = "src/CiPilot.Core/Tests.cs",
+            OldText =
+                "// public class GizliMetodSahibi\n" +
+                "// {\n" +
+                "//     public void GizliMetod() { }\n" +
+                "// }",
+            NewText =
+                "public class GizliMetodSahibi\n" +
+                "{\n" +
+                "    public void GizliMetod() { }\n" +
+                "}",
+            Reason = "yorumdaki tanım aktifleştiriliyor"
+        });
+
+    [Fact]
+    public void BuildBody_WarnsWhenFixUncommentsCode()
+    {
+        var outcome = new FixOutcome(FixStatus.Fixed, "tanım aktifleştirildi", [UncommentsABlock()], 1);
+
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
+
+        Assert.Contains("yorumdan çıkar", body);
+        Assert.Contains("bilerek kapatılmış", body);
+    }
+
+    [Fact]
+    public void BuildBody_NoUncommentWarning_ForOrdinaryFix()
+    {
+        var outcome = new FixOutcome(FixStatus.Fixed, "operatör düzeltildi", [Applied()], 1);
+
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
+
+        Assert.DoesNotContain("yorumdan çıkar", body);
+    }
 }
