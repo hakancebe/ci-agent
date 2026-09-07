@@ -126,6 +126,10 @@ ENV_VARS=(
     "AZURE_OPENAI_ENDPOINT=$AZURE_OPENAI_ENDPOINT"
     "AZURE_OPENAI_DEPLOYMENT=$AZURE_OPENAI_DEPLOYMENT"
     "CI_AGENT_WATCHED_WORKFLOWS=${CI_AGENT_WATCHED_WORKFLOWS:-CI,CD}"
+    # İptal/zaman aşımı ile biten run'lar da analiz edilsin mi? Varsayılan
+    # kapalı: takılan deploy ile kullanıcının elle iptali ayırt edilemiyor,
+    # açık olsa her elle iptalde yorum düşerdi.
+    "CI_AGENT_ANALYZE_CANCELLED=${CI_AGENT_ANALYZE_CANCELLED:-false}"
 )
 
 # İzleme opsiyonel: bağlantı dizesi yoksa servis izlemesiz ama sorunsuz çalışır.

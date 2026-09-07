@@ -164,4 +164,44 @@ public class WebhookParserTests
 
         Assert.Null(outcome.Job);
     }
+    // --- İptal edilen run'lar ----------------------------------------------
+    // Takılan bir deploy run'ı `cancelled` ile bitiyor (ölçüldü, pilot CD).
+    // Ama elle iptal de aynı sonucu veriyor ve ikisini ayırt edecek sinyal
+    // yok: job logu her iki durumda da sadece "The operation was canceled."
+    // içeriyor. Bu yüzden davranış opsiyonel, varsayılanı kapalı.
+
+    [Fact]
+    public void Parse_IgnoresCancelledRuns_ByDefault()
+    {
+        var payload = WorkflowRunPayload(conclusion: "cancelled");
+
+        var outcome = WebhookParser.Parse("workflow_run", "d", payload, WatchCi);
+
+        Assert.Null(outcome.Job);
+        Assert.Contains("cancelled", outcome.Reason!);
+    }
+
+    [Fact]
+    public void Parse_AcceptsCancelledRuns_WhenExplicitlyEnabled()
+    {
+        var payload = WorkflowRunPayload(conclusion: "cancelled");
+
+        var outcome = WebhookParser.Parse(
+            "workflow_run", "d", payload, WatchCi, analyzeCancelledRuns: true);
+
+        Assert.NotNull(outcome.Job);
+    }
+
+    [Fact]
+    public void Parse_StillIgnoresSuccessfulRuns_EvenWhenCancelledAnalysisIsEnabled()
+    {
+        // Ayar yalnızca iptalleri açıyor; başarılı run'lar hâlâ yok sayılmalı.
+        var payload = WorkflowRunPayload(conclusion: "success");
+
+        var outcome = WebhookParser.Parse(
+            "workflow_run", "d", payload, WatchCi, analyzeCancelledRuns: true);
+
+        Assert.Null(outcome.Job);
+    }
+
 }

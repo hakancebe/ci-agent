@@ -38,7 +38,8 @@ internal static class WebhookParser
         string eventName,
         string deliveryId,
         JsonDocument payload,
-        IReadOnlyCollection<string> watchedWorkflows)
+        IReadOnlyCollection<string> watchedWorkflows,
+        bool analyzeCancelledRuns = false)
     {
         if (!string.Equals(eventName, "workflow_run", StringComparison.OrdinalIgnoreCase))
             return ParseOutcome.Ignored($"'{eventName}' olayı bu fazda işlenmiyor");
@@ -54,8 +55,27 @@ internal static class WebhookParser
         if (!root.TryGetProperty("workflow_run", out var run))
             return ParseOutcome.Ignored("payload'da workflow_run yok");
 
+        // Neden yalnızca "failure": takılan bir deploy run'ı `cancelled` ile
+        // bitiriyor — ölçüldü (pilot CD run 34128... , tek job zaman aşımına
+        // uğradı, run conclusion=cancelled oldu). Ama kullanıcının ELLE iptal
+        // ettiği run da tam olarak aynı sonucu veriyor ve ikisini ayırt edecek
+        // hiçbir sinyal yok: job logu her iki durumda da yalnızca
+        // "##[error]The operation was canceled." içeriyor, API'de de
+        // iptal edeni/sebebini söyleyen bir alan bulunmuyor (ölçüldü).
+        //
+        // Varsayılan olarak iptal edilen run'lara bakmıyoruz: her elle iptalde
+        // yorum düşmek gürültü olur ve gürültü agent'ı kapattırır. Takılan
+        // deploy'ları da izlemek isteyen repo CI_AGENT_ANALYZE_CANCELLED=true
+        // diyebilir.
+        //
+        // Bunu açmadan da takılmalar yakalanabilir, hatta tercih edilen yol bu:
+        // deploy adımını `timeout 300 ./deploy.sh` gibi sarmak, takılmayı
+        // gerçek bir step failure'a çevirir.
         var conclusion = GetString(run, "conclusion");
-        if (conclusion != "failure")
+        var accepted = conclusion == "failure"
+                       || (analyzeCancelledRuns && conclusion == "cancelled");
+
+        if (!accepted)
             return ParseOutcome.Ignored($"conclusion='{conclusion}', analiz edilecek bir hata yok");
 
         var workflowName = GetString(run, "name");

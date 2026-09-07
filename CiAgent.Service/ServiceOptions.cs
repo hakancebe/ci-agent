@@ -29,6 +29,14 @@ internal sealed class ServiceOptions
     /// </summary>
     public required IReadOnlyCollection<string> WatchedWorkflows { get; init; }
 
+    /// <summary>
+    /// İptal/zaman aşımı ile biten run'lar da analiz edilsin mi?
+    /// Varsayılan false — bkz. WebhookParser'daki gerekçe: takılan deploy ile
+    /// elle iptal ayırt edilemiyor, açık olması her elle iptalde yorum
+    /// düşürürdü.
+    /// </summary>
+    public bool AnalyzeCancelledRuns { get; init; }
+
     // --- /fix (Container Apps Job) ---------------------------------------
     // Bunların hepsi boşsa /fix devre dışı kalır ve issue_comment olayları
     // yok sayılır. Bu bilinçli: Faz 1 kurulumu (yalnızca analiz) bozulmadan
@@ -117,6 +125,8 @@ internal sealed class ServiceOptions
             AzureOpenAiKey = key,
             AzureOpenAiDeployment = deployment,
             WatchedWorkflows = watched,
+            AnalyzeCancelledRuns =
+                string.Equals(config["CI_AGENT_ANALYZE_CANCELLED"], "true", StringComparison.OrdinalIgnoreCase),
 
             // /fix ayarları "zorunlu" listesinde DEĞİL: eksiklerse servis yine
             // ayağa kalkar, sadece /fix kapalı olur. Faz 1'de kurulmuş bir
