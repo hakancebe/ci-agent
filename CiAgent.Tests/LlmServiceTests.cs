@@ -150,7 +150,16 @@ public class LlmServiceTests
                     StepName = "Test",
                     FilePath = allLocated ? "src/Calculator.cs" : null,
                     LineNumber = allLocated ? 42 : null,
-                    Message = "Assert.Equal() Failure: Expected 5, Actual 4"
+                    Message = "Assert.Equal() Failure: Expected 5, Actual 4",
+
+                    // Konum ayrıştırılamamış olsa bile kanıt metninde duruyor —
+                    // gerçek bir xUnit hatası da böyle görünüyor. StripUnfoundedLines
+                    // satır numarasını ancak modele GÖSTERİLEN bir yerde bulursa
+                    // koruyor; dayanaksız bir fixture guard'ı test etmez, sadece
+                    // guard'ın kendisini kırar.
+                    RawEvidence = allLocated
+                        ? null
+                        : "   at CalculatorTests.Add() in /home/runner/work/p/p/src/Calculator.cs:line 42"
                 }
             }
         };
@@ -563,4 +572,184 @@ public class LlmServiceTests
         Assert.Contains(snippet, prompt);
         Assert.DoesNotContain("password=***", prompt);
     }
+    // --- Dayanaksız satır numarası ----------------------------------------
+    // Canlıda ölçüldü (pilot CD run 34132375477): gerçek bir Azure kimlik
+    // hatasında teşhis ve dosya DOĞRUYDU ama ".github/workflows/cd.yml:66"
+    // denildi; 66. satır bir yorum satırıydı ve logda o dosyanın hiçbir satır
+    // numarası geçmiyordu. İnsan bağlantıya tıklayıp alakasız bir satıra
+    // düşüyor ve sayının uydurma olduğunu anlamıyor.
+
+    private static AnalysisResult ResultWith(string? file, int? line) =>
+        new()
+        {
+            Summary = "özet",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "t", RootCause = "r", SuggestedFix = "f",
+                    Confidence = "high", AffectedFile = file, AffectedLine = line
+                }
+            }
+        };
+
+    private static ErrorContext ContextWithFailure(
+        string? path, int? line, string? snippet = null) =>
+        new()
+        {
+            JobName = "deploy",
+            FailedStepName = "Adım",
+            Failures =
+            {
+                new Failure
+                {
+                    Kind = FailureKind.Generic,
+                    JobName = "deploy",
+                    StepName = "Adım",
+                    FilePath = path,
+                    LineNumber = line,
+                    Message = "Process completed with exit code 1.",
+                    CodeSnippet = snippet
+                }
+            }
+        };
+
+    [Fact]
+    public void StripUnfoundedLines_DropsLine_WhenNothingInTheContextSupportsIt()
+    {
+        // Ölçülen vaka: workflow dosyası, hiçbir satır bilgisi yok.
+        var result = ResultWith(".github/workflows/cd.yml", 66);
+        var context = ContextWithFailure(path: null, line: null);
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        var analysis = Assert.Single(result.Analyses);
+        Assert.Null(analysis.AffectedLine);
+        // Dosya adı korunuyor: o kısım doğruydu, atılmamalı.
+        Assert.Equal(".github/workflows/cd.yml", analysis.AffectedFile);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_KeepsLine_WhenTheParserFoundTheSameLine()
+    {
+        // Derleyici hatası / stack trace: satır ayrıştırıcıdan geliyor.
+        var result = ResultWith("src/Calculator.cs", 42);
+        var context = ContextWithFailure("src/Calculator.cs", 42);
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(42, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_KeepsLine_WhenANumberedSnippetWasShown()
+    {
+        // Kesit satır numaralı gösteriliyor; model komşu bir satırı da
+        // gösterebilir ve bu meşru.
+        var result = ResultWith("src/Calculator.cs", 41);
+        var context = ContextWithFailure(
+            "src/Calculator.cs", 42, snippet: "41: {\n>> 42:     return a - b;");
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(41, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_KeepsLine_WhenTheWholeFileWasShown()
+    {
+        var result = ResultWith("src/Calculator.cs", 7);
+        var context = ContextWithFailure(path: null, line: null);
+        context.RelatedSources["src/Calculator.cs"] = "class Calculator { }";
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(7, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_ToleratesPathStyleDifferences()
+    {
+        // Model bazen "./src/x.cs" yazıyor; amaç sayıyı doğrulamak, yolu değil.
+        var result = ResultWith("./src/Calculator.cs", 42);
+        var context = ContextWithFailure("src/Calculator.cs", 42);
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(42, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    // --- Ham metinden doğrulama --------------------------------------------
+    // Guard'ın en kritik kaynağı bu. Olmasa doğru sayıları da atardı:
+    // .NET dışı dillerde ayrıştırıcı konumu çözemiyor, sayı yalnızca ham
+    // logda duruyor (ölçüldü, pilot CI run 34132572126 — Node/TAP).
+
+    [Fact]
+    public void StripUnfoundedLines_KeepsLine_WhenOnlyTheRawLogCarriesIt()
+    {
+        var result = ResultWith("node-app/calculator.test.js", 6);
+        var context = ContextWithFailure(path: null, line: null);
+        context.RawStepLog =
+            "not ok 1 - add iki sayiyi toplar\n"
+            + "  at Object.<anonymous> (/home/runner/work/p/p/node-app/calculator.test.js:6:10)";
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(6, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_KeepsLine_WhenAnAnnotationCarriesIt()
+    {
+        var result = ResultWith("src/Calculator.cs", 42);
+        var context = ContextWithFailure(path: null, line: null);
+        context.FilteredAnnotations.Add("src/Calculator.cs(42,5): error CS0029: ...");
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(42, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_DropsLine_WhenTheRawLogMentionsADifferentFile()
+    {
+        // Sayı logda geçiyor ama BAŞKA bir dosyanın yanında. Model iki bilgiyi
+        // birleştirmiş olabilir; bu dayanak değil.
+        var result = ResultWith("src/Calculator.cs", 42);
+        var context = ContextWithFailure(path: null, line: null);
+        context.RawStepLog = "   at Other.Run() in /home/runner/work/p/p/src/Other.cs:line 42";
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Null(Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Theory]
+    [InlineData(420)]  // "…:line 42" 420'yi doğrulamaz
+    [InlineData(4)]    // 42'nin ilk hanesi de dayanak değil
+    public void StripUnfoundedLines_DropsLine_WhenTheNumberOnlyOverlapsAnotherNumber(int claimed)
+    {
+        var result = ResultWith("src/Calculator.cs", claimed);
+        var context = ContextWithFailure(path: null, line: null);
+        context.RawStepLog = "   at X.Y() in /home/runner/work/p/p/src/Calculator.cs:line 42";
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Null(Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_DropsLine_WhenTheNumberIsTooFarFromTheFileName()
+    {
+        // Aynı satırda geçiyor olması yetmez; dosya adıyla sayı arasında
+        // sayfalarca metin varsa bu tesadüf olabilir.
+        var result = ResultWith("src/Calculator.cs", 42);
+        var context = ContextWithFailure(path: null, line: null);
+        context.RawStepLog = "src/Calculator.cs derlendi, sonra tamamen ilgisiz bir yerde 42 geçti";
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Null(Assert.Single(result.Analyses).AffectedLine);
+    }
+
 }

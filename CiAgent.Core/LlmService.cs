@@ -3,6 +3,7 @@ using System.ClientModel.Primitives;
 using Azure.Core;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using OpenAI;
 using OpenAI.Chat;
 
@@ -261,7 +262,127 @@ public class LlmService
         if (result is not null && budget.Describe(context) is string note)
             result.ReductionNote = note;
 
+        if (result is not null)
+            StripUnfoundedLines(result, context);
+
         return result;
+    }
+
+    /// <summary>
+    /// Dayanağı olmayan satır numaralarını düşürür (dosya adı korunur).
+    ///
+    /// Neden: model, içeriğini HİÇ GÖRMEDİĞİ bir dosya için satır numarası
+    /// uydurabiliyor. Canlıda ölçüldü (pilot CD run 34132375477): gerçek bir
+    /// Azure kimlik hatasında teşhis ve dosya doğruydu ama
+    /// ".github/workflows/cd.yml:66" denildi; 66. satır bir yorum satırıydı.
+    /// Logda o dosyanın hiçbir satır numarası geçmiyordu.
+    ///
+    /// Bu başarısızlık GÖRÜNMEZ: insan bağlantıya tıklıyor, alakasız bir
+    /// satıra düşüyor ve sayının uydurma olduğunu anlamıyor. Ölçülmüş +
+    /// görünmez olduğu için burada yumuşak bir uyarı değil deterministik bir
+    /// guard var.
+    ///
+    /// Satır numarası ancak şu üç durumda korunuyor — üçünde de modelin
+    /// sayıyı GÖREBİLECEĞİ bir kaynak var:
+    ///   1) ayrıştırıcı o dosya için aynı satırı zaten bulmuş
+    ///      (derleyici hatası, stack trace)
+    ///   2) o dosyanın satır numaralı kod kesiti prompt'a girmiş
+    ///   3) o dosyanın tam içeriği prompt'a girmiş (RelatedSources)
+    ///   4) ham log / annotation / kanıt metninde "dosyaAdı ... satır" geçiyor
+    ///
+    /// (4) olmadan guard doğru sayıları da atardı. Canlıda ölçüldü (pilot CI
+    /// run 34132572126): Node testi patladığında konum yalnızca TAP çıktısında
+    /// ("calculator.test.js:6:10") duruyor. Ayrıştırıcının .NET dışı dili
+    /// çözümlemediği için ortada dosya yolu taşıyan bir Failure yok, ama sayı
+    /// gerçek ve model onu okuyabiliyor.
+    /// </summary>
+    internal static void StripUnfoundedLines(AnalysisResult result, ErrorContext context)
+    {
+        foreach (var analysis in result.Analyses)
+        {
+            if (analysis.AffectedLine is null || string.IsNullOrWhiteSpace(analysis.AffectedFile))
+                continue;
+
+            if (!IsLineSupported(analysis.AffectedFile, analysis.AffectedLine.Value, context))
+                analysis.AffectedLine = null;
+        }
+    }
+
+    private static bool IsLineSupported(string file, int line, ErrorContext context)
+    {
+        // Yol karşılaştırması gevşek: model bazen "./src/x.cs" ya da farklı
+        // ayraçla yazıyor. Amaç sayıyı doğrulamak, yolu değil.
+        static string Norm(string p) => p.Replace('\\', '/').TrimStart('.', '/');
+
+        var target = Norm(file);
+
+        foreach (var failure in context.Failures)
+        {
+            if (failure.FilePath is null || !Norm(failure.FilePath).Equals(target, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // (1) ayrıştırıcı aynı satırı bulmuş
+            if (failure.LineNumber == line)
+                return true;
+
+            // (2) satır numaralı kesit gösterilmiş — model sayıyı okuyabilir
+            if (failure.CodeSnippet is not null)
+                return true;
+        }
+
+        // (3) tam dosya içeriği gösterilmiş
+        if (context.RelatedSources.Keys.Any(k => Norm(k).Equals(target, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        // (4) sayı, modele gösterilen düz metinlerden birinde dosya adının
+        // hemen yanında geçiyor
+        return AppearsInEvidence(target, line, context);
+    }
+
+    /// <summary>
+    /// Modele ham metin olarak giden her yerde "dosyaAdı ... satır" kalıbını arar.
+    /// Yol değil yalnızca dosya adı eşleştiriliyor: logdaki yol mutlak
+    /// ("/home/runner/work/repo/repo/src/Calculator.cs"), modelinki repo'ya göre
+    /// relative. Amaç sayının uydurma olmadığını doğrulamak, yolu denetlemek değil.
+    /// </summary>
+    private static bool AppearsInEvidence(string normalizedFile, int line, ErrorContext context)
+    {
+        var fileName = normalizedFile[(normalizedFile.LastIndexOf('/') + 1)..];
+        if (fileName.Length == 0)
+            return false;
+
+        // "Calculator.cs:line 42", "Calculator.cs(42,5)", "calculator.test.js:6:10"
+        // hepsi eşleşir. Sondaki lookahead "…:line 420" içindeki 42'yi eler;
+        // araya rakam giremediği için "…:line 142" da eşleşmez.
+        var pattern = new Regex(
+            $@"{Regex.Escape(fileName)}[^0-9]{{0,12}}{line}(?![0-9])",
+            RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+
+        try
+        {
+            return EvidenceTexts(context).Any(text => pattern.IsMatch(text));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+    }
+
+    private static IEnumerable<string> EvidenceTexts(ErrorContext context)
+    {
+        if (!string.IsNullOrEmpty(context.RawStepLog))
+            yield return context.RawStepLog;
+
+        foreach (var annotation in context.FilteredAnnotations)
+            yield return annotation;
+
+        foreach (var failure in context.Failures)
+        {
+            if (!string.IsNullOrEmpty(failure.RawEvidence))
+                yield return failure.RawEvidence!;
+
+            yield return failure.Message;
+        }
     }
 
     /// <summary>
