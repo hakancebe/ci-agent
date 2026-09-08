@@ -616,4 +616,72 @@ public class ReportServiceTests
         Assert.Null(ReportService.TryParseRunId("<!-- ci-agent-fix:5570747602 -->"));
     }
 
+    // --- "/fix bu dosyaya dokunamıyor" -------------------------------------
+    // İki ayrı "düzeltilemez" sebebi var ve karıştırılmamalı:
+    //   fixable=false -> düzeltme KODDAN çıkarılamıyor
+    //   politika reddi -> düzeltme belli ama /fix o DOSYAYA dokunamıyor
+    //
+    // İkincisi v0.7.0'a kadar kendiliğinden gizliydi: .NET dışı dillerde model
+    // kaynağı göremediği için zaten fixable=false diyordu. Köprü açılınca model
+    // "düzeltilebilir" demeye başladı ve rozet kayboldu — ama /fix hâlâ
+    // reddediyor. Söylemezsek okuyucu boşuna /fix yazar.
+
+    private static AnalysisResult FixableAnalysisFor(string affectedFile) =>
+        new()
+        {
+            Summary = "özet",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "t", RootCause = "r", SuggestedFix = "f",
+                    Confidence = "high", Fixable = true, AffectedFile = affectedFile
+                }
+            }
+        };
+
+    [Fact]
+    public void Report_WarnsThatFixCannotTouchTheFile_WhenPolicyRejectsIt()
+    {
+        var body = ReportService.BuildCommentBody(
+            FixableAnalysisFor("py-app/calculator.py"), SampleContext(), runId: 42);
+
+        Assert.Contains("dokunamıyor", body);
+        Assert.Contains("yalnızca .cs", body);
+    }
+
+    [Fact]
+    public void Report_StaysSilent_WhenFixCanActuallyEditTheFile()
+    {
+        var body = ReportService.BuildCommentBody(
+            FixableAnalysisFor("src/Calculator.cs"), SampleContext(), runId: 42);
+
+        Assert.DoesNotContain("dokunamıyor", body);
+        Assert.DoesNotContain("Otomatik düzeltilemez", body);
+    }
+
+    [Fact]
+    public void Report_PrefersTheCodeReason_WhenBothWouldApply()
+    {
+        // fixable=false daha temel: düzeltme zaten bilinmiyorsa dosya politikası
+        // ikinci derece bir ayrıntı. İki rozet birden gösterilmemeli.
+        var result = new AnalysisResult
+        {
+            Summary = "özet",
+            Analyses =
+            {
+                new Analysis
+                {
+                    Title = "t", RootCause = "r", SuggestedFix = "f",
+                    Confidence = "high", Fixable = false,
+                    AffectedFile = "py-app/calculator.py"
+                }
+            }
+        };
+
+        var body = ReportService.BuildCommentBody(result, SampleContext(), runId: 42);
+
+        Assert.Contains("Otomatik düzeltilemez", body);
+        Assert.DoesNotContain("dokunamıyor", body);
+    }
 }
