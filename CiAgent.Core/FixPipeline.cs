@@ -13,7 +13,7 @@ public enum FixStatus
     NoSourceFiles,
 
     /// <summary>Hatanın işaret ettiği dosyaların hepsi düzenleme politikasına
-    /// takıldı (test dosyası, <c>.github/</c> altı, .cs olmayan). Dosya vardı ama
+    /// takıldı (test dosyası, <c>.github/</c> altı, doğrulanamayan bir dil). Dosya vardı ama
     /// dokunulması bilerek engellendi — bu <see cref="NoSourceFiles"/>'dan farklı,
     /// kullanıcıya "altyapı sorunu" değil "bu dosya kapsam dışı" denmeli.</summary>
     FilesRejected,
@@ -31,7 +31,20 @@ public enum FixStatus
     EditsRejected,
 
     /// <summary>Değişiklik uygulandı ama testler hâlâ kırık — her şey geri alındı.</summary>
-    VerificationFailed
+    VerificationFailed,
+
+    /// <summary>
+    /// Doğrulama HİÇ çalıştırılamadı: klonlanan depoda tanınan bir proje tanımı
+    /// yok, ya da o ekosistemin aracı agent container'ında kurulu değil.
+    ///
+    /// <see cref="VerificationFailed"/>'dan ayrı, çünkü söylenecek şey farklı:
+    /// orada düzeltmenin YANLIŞ olduğunu biliyoruz, burada doğru olup olmadığını
+    /// BİLMİYORUZ. Değişiklik yine de geri alınıyor — doğrulanmamış bir düzeltmeyi
+    /// commit'lemek /fix'in var oluş sebebini ortadan kaldırırdı.
+    ///
+    /// Tekrar denenmiyor: eksik olan şey modelin önerisi değil, ortam.
+    /// </summary>
+    NotVerifiable
 }
 
 public sealed record FixOutcome(
@@ -239,6 +252,14 @@ public sealed class FixPipeline
         {
             _log.LogInformation("Doğrulama geçti.");
             return new FixOutcome(FixStatus.Fixed, proposal.Summary, outcomes, attempt, verification.Output);
+        }
+
+        if (!verification.Attempted)
+        {
+            _log.LogWarning(
+                "Doğrulama çalıştırılamadı, değişiklikler geri alınacak: {Reason}", verification.Output);
+            return new FixOutcome(
+                FixStatus.NotVerifiable, proposal.Summary, outcomes, attempt, verification.Output);
         }
 
         _log.LogWarning("Doğrulama başarısız, değişiklikler geri alınacak.");

@@ -83,7 +83,7 @@ public static class FixMode
             github, llm, report, ConsoleLogger.Create<CiAnalysisPipeline>());
 
         var fixPipeline = new FixPipeline(
-            llm, new DotnetVerificationRunner(), ConsoleLogger.Create<FixPipeline>());
+            llm, new ProjectVerificationRunner(), ConsoleLogger.Create<FixPipeline>());
 
         // Kodun nereden geleceği burada seçiliyor: Actions'ta runner zaten
         // checkout etmiş, Container Apps Job'da repoyu kendimiz klonluyoruz.
