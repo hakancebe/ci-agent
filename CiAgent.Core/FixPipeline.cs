@@ -246,7 +246,8 @@ public sealed class FixPipeline
         _log.LogInformation("{Count} değişiklik uygulandı, doğrulanıyor (derleme + testler)...",
             outcomes.Count);
 
-        var verification = await _verifier.VerifyAsync(workspaceRoot);
+        var verification = await _verifier.VerifyAsync(
+            workspaceRoot, outcomes.Select(o => o.Edit.File).ToList());
 
         if (verification.Succeeded)
         {

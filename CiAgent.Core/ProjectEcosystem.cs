@@ -58,31 +58,105 @@ public static class EcosystemDetector
             .ToList();
 
     /// <summary>
-    /// Kökteki işaret dosyalarına bakar. Birden fazla eşleşirse .NET öncelikli:
-    /// agent'ın en çok ölçüldüğü ve doğrulamasının en güvenilir olduğu yol o.
+    /// Bir dosyanın hangi ekosisteme ait olduğu — uzantısından.
+    ///
+    /// Doğrulamanın çıkış noktası BU, deponun genel türü değil. Fark önemli:
+    /// çok dilli bir repoda (pilot repo tam olarak öyle — kökte CiPilot.sln,
+    /// yanında py-app/ ve node-app/) depoya bakan bir tespit ".NET" der,
+    /// `dotnet test` çalıştırır, o da geçer — Python testi hâlâ kırıkken
+    /// "doğrulandı" denmiş olurdu. Doğrulanması gereken şey DEĞİŞİKLİK.
+    /// </summary>
+    public static ProjectEcosystem EcosystemOf(string filePath)
+    {
+        foreach (var ecosystem in Enum.GetValues<ProjectEcosystem>())
+        {
+            if (ecosystem == ProjectEcosystem.Unknown)
+                continue;
+
+            if (ExtensionOf(ecosystem).Any(
+                    ext => filePath.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+                return ecosystem;
+        }
+
+        return ProjectEcosystem.Unknown;
+    }
+
+    /// <summary>
+    /// Bu dosyanın testleri hangi dizinde çalıştırılmalı?
+    ///
+    /// Dosyanın klasöründen başlayıp <paramref name="workspaceRoot"/>'a kadar
+    /// yukarı çıkarak o ekosistemin proje işaretini arar. Bulamazsa dosyanın
+    /// kendi klasörünü döner — pilot repodaki py-app/ tam olarak bu durum:
+    /// proje tanım dosyası yok ama testler o klasörde çalışıyor (CI de
+    /// `cd py-app && pytest` diyor).
+    ///
+    /// Kökten çalıştırmak yanlış olurdu: Python'da import yolları, Node'da
+    /// package.json'ın yeri o klasöre göre çözülüyor.
+    /// </summary>
+    public static string ProjectRootFor(
+        string workspaceRoot, string relativeFilePath, ProjectEcosystem ecosystem)
+    {
+        var markers = MarkersOf(ecosystem);
+        if (markers.Count == 0)
+            return workspaceRoot;
+
+        var fullRoot = Path.GetFullPath(workspaceRoot);
+        var directory = Path.GetDirectoryName(
+            Path.GetFullPath(Path.Combine(fullRoot, relativeFilePath)));
+
+        var fileDirectory = directory;
+
+        while (directory is not null && directory.StartsWith(fullRoot, StringComparison.Ordinal))
+        {
+            if (markers.Any(m => HasAny(directory, topLevelOnly: true, m)))
+                return directory;
+
+            if (string.Equals(directory, fullRoot, StringComparison.Ordinal))
+                break;
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return fileDirectory ?? fullRoot;
+    }
+
+    private static IReadOnlyList<string> MarkersOf(ProjectEcosystem ecosystem) => ecosystem switch
+    {
+        ProjectEcosystem.DotNet => ["*.sln", "*.slnx", "*.csproj"],
+        ProjectEcosystem.Node => ["package.json"],
+        ProjectEcosystem.Python => ["pytest.ini", "pyproject.toml", "setup.py", "requirements.txt", "tox.ini"],
+        _ => []
+    };
+
+    /// <summary>
+    /// Kökteki işaret dosyalarına bakar. Birden fazla eşleşirse .NET öncelikli.
     ///
     /// Yalnızca ilk seviye ve bir alt seviye taranıyor. Tüm ağacı taramak
     /// node_modules gibi klasörlerde dakikalar sürebilirdi; gerçek projelerde
     /// proje tanımı zaten kökte ya da köke yakın duruyor.
+    ///
+    /// NOT: /fix bunu KULLANMIYOR — orada doğrulanan şey değişikliğin kendisi
+    /// (<see cref="EcosystemOf"/>). Bu metot "depoda genel olarak ne var"
+    /// sorusu için duruyor.
     /// </summary>
     public static ProjectEcosystem Detect(string workspaceRoot)
     {
         if (!Directory.Exists(workspaceRoot))
             return ProjectEcosystem.Unknown;
 
-        if (HasAny(workspaceRoot, "*.sln", "*.slnx", "*.csproj"))
-            return ProjectEcosystem.DotNet;
+        foreach (var ecosystem in Enum.GetValues<ProjectEcosystem>())
+        {
+            if (ecosystem == ProjectEcosystem.Unknown)
+                continue;
 
-        if (HasAny(workspaceRoot, "package.json"))
-            return ProjectEcosystem.Node;
-
-        if (HasAny(workspaceRoot, "pytest.ini", "pyproject.toml", "setup.py", "requirements.txt", "tox.ini"))
-            return ProjectEcosystem.Python;
+            if (HasAny(workspaceRoot, topLevelOnly: false, MarkersOf(ecosystem).ToArray()))
+                return ecosystem;
+        }
 
         return ProjectEcosystem.Unknown;
     }
 
-    private static bool HasAny(string root, params string[] patterns)
+    private static bool HasAny(string root, bool topLevelOnly, params string[] patterns)
     {
         foreach (var pattern in patterns)
         {
@@ -90,6 +164,9 @@ public static class EcosystemDetector
             {
                 if (Directory.EnumerateFiles(root, pattern, SearchOption.TopDirectoryOnly).Any())
                     return true;
+
+                if (topLevelOnly)
+                    continue;
 
                 foreach (var dir in Directory.EnumerateDirectories(root))
                 {

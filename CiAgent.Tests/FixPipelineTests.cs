@@ -46,10 +46,16 @@ public sealed class FixPipelineTests : IDisposable
         public ScriptedVerifier(params VerificationResult[] results)
             => _results = new Queue<VerificationResult>(results);
 
-        public Task<VerificationResult> VerifyAsync(string workingDirectory)
+        /// <summary>Doğrulanan dosyalar da kaydediliyor: doğrulamanın DEĞİŞİKLİĞE
+        /// göre yapıldığını (depoya göre değil) test edebilmek için.</summary>
+        public IReadOnlyCollection<string>? LastEditedPaths { get; private set; }
+
+        public Task<VerificationResult> VerifyAsync(
+            string workspaceRoot, IReadOnlyCollection<string> editedPaths)
         {
             CallCount++;
-            LastWorkingDirectory = workingDirectory;
+            LastWorkingDirectory = workspaceRoot;
+            LastEditedPaths = editedPaths;
             return Task.FromResult(_results.Dequeue());
         }
     }

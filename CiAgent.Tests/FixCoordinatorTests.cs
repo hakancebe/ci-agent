@@ -40,7 +40,8 @@ public class FixCoordinatorTests
 
     private sealed class ExplodingVerifier : IVerificationRunner
     {
-        public Task<VerificationResult> VerifyAsync(string workingDirectory)
+        public Task<VerificationResult> VerifyAsync(
+            string workspaceRoot, IReadOnlyCollection<string> editedPaths)
             => throw new InvalidOperationException("doğrulama hiç çalışmamalıydı");
     }
 

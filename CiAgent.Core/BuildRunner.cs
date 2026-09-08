@@ -30,78 +30,14 @@ public sealed record VerificationResult(bool Succeeded, string Output, bool Atte
 /// </summary>
 public interface IVerificationRunner
 {
-    Task<VerificationResult> VerifyAsync(string workingDirectory);
-}
-
-/// <summary>
-/// `dotnet build` + `dotnet test` çalıştırır. Build patlarsa teste hiç geçmez -
-/// derlenmeyen kodun test çıktısı zaten yanıltıcı olur.
-/// </summary>
-public sealed class DotnetVerificationRunner : IVerificationRunner
-{
-    private readonly TimeSpan _timeout;
-
-    public DotnetVerificationRunner(TimeSpan? timeout = null)
-        => _timeout = timeout ?? TimeSpan.FromMinutes(10);
-
-    public async Task<VerificationResult> VerifyAsync(string workingDirectory)
-    {
-        var build = await RunAsync("build --nologo", workingDirectory);
-        if (!build.Succeeded)
-            return new VerificationResult(false, "=== dotnet build ===\n" + build.Output);
-
-        var test = await RunAsync("test --nologo", workingDirectory);
-        return new VerificationResult(
-            test.Succeeded,
-            "=== dotnet build ===\nBaşarılı.\n\n=== dotnet test ===\n" + test.Output);
-    }
-
-    private async Task<VerificationResult> RunAsync(string arguments, string workingDirectory)
-    {
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "dotnet",
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            }
-        };
-
-        var output = new StringBuilder();
-        // Çıktı olay bazlı toplanıyor: senkron okuma, boru dolduğunda süreci
-        // kilitler (build logları bunu rahatlıkla aşıyor).
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (output) output.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (output) output.AppendLine(e.Data); };
-
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var cts = new CancellationTokenSource(_timeout);
-        try
-        {
-            await process.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKill(process);
-            lock (output) output.AppendLine($"[{_timeout.TotalMinutes:0} dakika zaman aşımı, süreç sonlandırıldı]");
-            return new VerificationResult(false, output.ToString());
-        }
-
-        lock (output)
-            return new VerificationResult(process.ExitCode == 0, output.ToString());
-    }
-
-    private static void TryKill(Process process)
-    {
-        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        catch { /* süreç zaten bitmiş olabilir; zaman aşımını maskelememek için yutuluyor */ }
-    }
+    /// <param name="workspaceRoot">Klonlanmış deponun kökü.</param>
+    /// <param name="editedPaths">
+    /// Bu turda DEĞİŞTİRİLEN dosyalar, depo köküne göre. Doğrulanacak ekosistem
+    /// buradan çıkıyor — deponun genel türünden değil. Çok dilli bir repoda ikisi
+    /// farklı olabilir ve fark sessiz bir "doğrulandı" yalanı üretir.
+    /// </param>
+    Task<VerificationResult> VerifyAsync(
+        string workspaceRoot, IReadOnlyCollection<string> editedPaths);
 }
 
 /// <summary>
@@ -119,29 +55,70 @@ public sealed class DotnetVerificationRunner : IVerificationRunner
 public sealed class ProjectVerificationRunner : IVerificationRunner
 {
     private readonly TimeSpan _timeout;
-    private readonly Func<string, ProjectEcosystem> _detect;
 
-    public ProjectVerificationRunner(
-        TimeSpan? timeout = null, Func<string, ProjectEcosystem>? detect = null)
+    public ProjectVerificationRunner(TimeSpan? timeout = null)
+        => _timeout = timeout ?? TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Değiştirilen dosyaları ekosistem + proje klasörüne göre gruplayıp her grubu
+    /// kendi araçlarıyla doğrular. HEPSİ geçmeden sonuç başarılı sayılmıyor.
+    ///
+    /// Neden gruplama: bir /fix turu birden fazla dile dokunabilir. Tek bir
+    /// ekosistem seçip onu çalıştırmak, dokunulan diğer dilin testlerini hiç
+    /// çalıştırmadan "doğrulandı" demek olurdu.
+    /// </summary>
+    public async Task<VerificationResult> VerifyAsync(
+        string workspaceRoot, IReadOnlyCollection<string> editedPaths)
     {
-        _timeout = timeout ?? TimeSpan.FromMinutes(10);
-        _detect = detect ?? EcosystemDetector.Detect;
-    }
+        if (editedPaths.Count == 0)
+            return VerificationResult.NotAttempted("Doğrulanacak bir değişiklik yok.");
 
-    public async Task<VerificationResult> VerifyAsync(string workingDirectory)
-    {
-        var ecosystem = _detect(workingDirectory);
+        var groups = editedPaths
+            .Select(path => (Path: path, Ecosystem: EcosystemDetector.EcosystemOf(path)))
+            .Where(x => x.Ecosystem != ProjectEcosystem.Unknown)
+            .Select(x => (
+                x.Ecosystem,
+                Root: EcosystemDetector.ProjectRootFor(workspaceRoot, x.Path, x.Ecosystem)))
+            .Distinct()
+            .ToList();
 
-        return ecosystem switch
+        if (groups.Count == 0)
         {
-            ProjectEcosystem.DotNet => await VerifyDotnetAsync(workingDirectory),
-            ProjectEcosystem.Node => await VerifyNodeAsync(workingDirectory),
-            ProjectEcosystem.Python => await VerifyPythonAsync(workingDirectory),
-            _ => VerificationResult.NotAttempted(
-                "Klonlanan depoda tanınan bir proje tanımı bulunamadı "
-                + "(*.sln, *.csproj, package.json, pyproject.toml, requirements.txt).")
-        };
+            return VerificationResult.NotAttempted(
+                "Değiştirilen dosyaların hiçbiri doğrulanabilir bir ekosisteme ait değil: "
+                + string.Join(", ", editedPaths));
+        }
+
+        var combined = new StringBuilder();
+
+        foreach (var (ecosystem, root) in groups)
+        {
+            var result = await VerifyOneAsync(ecosystem, root);
+
+            combined.AppendLine($"### {ecosystem} — {Path.GetRelativePath(workspaceRoot, root)}");
+            combined.AppendLine(result.Output);
+            combined.AppendLine();
+
+            // İlk başarısızlıkta duruyoruz: kalanları çalıştırmak zaman harcar ve
+            // sonucu değiştirmez, çünkü hepsinin geçmesi gerekiyor.
+            if (!result.Attempted)
+                return VerificationResult.NotAttempted(combined.ToString());
+
+            if (!result.Succeeded)
+                return new VerificationResult(false, combined.ToString());
+        }
+
+        return new VerificationResult(true, combined.ToString());
     }
+
+    private async Task<VerificationResult> VerifyOneAsync(ProjectEcosystem ecosystem, string root) =>
+        ecosystem switch
+        {
+            ProjectEcosystem.DotNet => await VerifyDotnetAsync(root),
+            ProjectEcosystem.Node => await VerifyNodeAsync(root),
+            ProjectEcosystem.Python => await VerifyPythonAsync(root),
+            _ => VerificationResult.NotAttempted($"'{ecosystem}' için doğrulama yolu yok.")
+        };
 
     private async Task<VerificationResult> VerifyDotnetAsync(string cwd)
     {

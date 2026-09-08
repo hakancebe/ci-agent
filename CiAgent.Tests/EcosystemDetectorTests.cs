@@ -114,4 +114,64 @@ public class EcosystemDetectorTests : IDisposable
     {
         Assert.Empty(EcosystemDetector.ExtensionOf(ProjectEcosystem.Unknown));
     }
+
+    // --- Doğrulanan şey DEĞİŞİKLİK, depo değil -----------------------------
+    // Bu ayrımı kaçırmak sessiz bir "doğrulandı" yalanı üretiyordu: pilot repo
+    // çok dilli (kökte CiPilot.sln, yanında py-app/ ve node-app/). Depoya bakan
+    // bir tespit ".NET" der, /fix bir .py dosyasını düzenler, `dotnet test`
+    // çalışır ve GEÇER — Python testi hâlâ kırıkken "düzeltildi" denmiş olurdu.
+
+    [Theory]
+    [InlineData("src/Calculator.cs", ProjectEcosystem.DotNet)]
+    [InlineData("py-app/calculator.py", ProjectEcosystem.Python)]
+    [InlineData("node-app/calculator.js", ProjectEcosystem.Node)]
+    [InlineData("src/Button.tsx", ProjectEcosystem.Node)]
+    [InlineData("internal/calculator.go", ProjectEcosystem.Unknown)]
+    [InlineData("README.md", ProjectEcosystem.Unknown)]
+    public void EcosystemOf_ComesFromTheFile_NotTheRepository(string path, ProjectEcosystem expected)
+    {
+        Assert.Equal(expected, EcosystemDetector.EcosystemOf(path));
+    }
+
+    [Fact]
+    public void ProjectRootFor_UsesTheNearestProjectMarker()
+    {
+        Touch("services/api/package.json");
+        Touch("services/api/src/handler.js");
+
+        var root = EcosystemDetector.ProjectRootFor(
+            _root, "services/api/src/handler.js", ProjectEcosystem.Node);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(_root, "services/api")), root);
+    }
+
+    [Fact]
+    public void ProjectRootFor_FallsBackToTheFilesOwnFolder_WhenNoMarkerExists()
+    {
+        // Pilot repodaki py-app/ tam olarak bu: proje tanım dosyası yok ama
+        // testler o klasörde çalışıyor (CI de `cd py-app && pytest` diyor).
+        // Kökten çalıştırmak yanlış olurdu — Python'da import yolları o klasöre
+        // göre çözülüyor.
+        Touch("CiPilot.sln");
+        Touch("py-app/calculator.py");
+
+        var root = EcosystemDetector.ProjectRootFor(
+            _root, "py-app/calculator.py", ProjectEcosystem.Python);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(_root, "py-app")), root);
+    }
+
+    [Fact]
+    public void ProjectRootFor_DoesNotBorrowAnotherEcosystemsMarker()
+    {
+        // Kökteki .sln bir Python dosyasının proje kökü olamaz. Olsaydı
+        // doğrulama yanlış klasörde, yanlış araçla çalışırdı.
+        Touch("CiPilot.sln");
+        Touch("py-app/calculator.py");
+
+        var root = EcosystemDetector.ProjectRootFor(
+            _root, "py-app/calculator.py", ProjectEcosystem.Python);
+
+        Assert.NotEqual(Path.GetFullPath(_root), root);
+    }
 }
