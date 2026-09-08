@@ -174,4 +174,22 @@ public class EcosystemDetectorTests : IDisposable
 
         Assert.NotEqual(Path.GetFullPath(_root), root);
     }
+
+    // --- Node: npm zorunlu değil ------------------------------------------
+    // package.json'a zorlamak yanlış NEGATİF üretiyordu: pilot repodaki
+    // node-app/ klasöründe package.json yok (CI de `node --test node-app/`
+    // diyor), o yüzden `npm install` ENOENT ile patlıyor ve DOĞRU bir düzeltme
+    // bile "testler geçmedi" sayılıyordu. Ölçüldü.
+
+    [Fact]
+    public void ProjectRootFor_UsesTheFilesFolder_WhenNodeProjectHasNoPackageJson()
+    {
+        Touch("CiPilot.sln");
+        Touch("node-app/calculator.js");
+
+        var root = EcosystemDetector.ProjectRootFor(
+            _root, "node-app/calculator.js", ProjectEcosystem.Node);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(_root, "node-app")), root);
+    }
 }
