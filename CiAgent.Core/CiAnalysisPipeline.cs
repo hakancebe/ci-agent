@@ -115,6 +115,8 @@ public sealed class CiAnalysisPipeline
         var reportedSha = failedJobs[0].HeadSha;
         var headSha = LogParser.ExtractCheckedOutSha(jobLogs[0].RawLog) ?? reportedSha;
 
+        await AddWorkflowFileAsync(context, owner, repo, reportedSha);
+
         if (!string.Equals(headSha, reportedSha, StringComparison.OrdinalIgnoreCase))
             _log.LogInformation(
                 "Run'ın bildirdiği commit {Reported} ama job {Actual} commit'ini checkout etmiş; "
@@ -160,6 +162,42 @@ public sealed class CiAnalysisPipeline
     }
 
     // --- Adım 1-2: job/annotation/log çekme -----------------------------
+
+    /// <summary>
+    /// Workflow dosyasının içeriğini prompt'a hazırlar — yalnızca hiçbir failure'ın
+    /// konumu bilinmiyorsa.
+    ///
+    /// Konumsuz hata demek, pratikte "yapılandırma/ortam hatası" demek: derleyici de
+    /// test de dosya:satır verir, `az login` vermez. O sınıfta model elindeki tek
+    /// somut dosya olarak workflow dosyasını gösteriyor, ama içeriğini görmediği için
+    /// satır numarasını uyduruyordu (ölçüldü, pilot CD run 34194933554).
+    ///
+    /// Commit olarak run'ın bildirdiği SHA kullanılıyor, log'dan okunan değil:
+    /// workflow dosyası her zaman run'ı BAŞLATAN commit'ten gelir.
+    ///
+    /// Başarısız olursa sessizce atlanıyor; analiz eskisi gibi devam eder.
+    /// </summary>
+    private async Task AddWorkflowFileAsync(
+        ErrorContext context, string owner, string repo, string? sha)
+    {
+        if (context.AllFailuresLocated || sha is null)
+            return;
+
+        if (context.Workflow?.Path is not { Length: > 0 } path)
+            return;
+
+        try
+        {
+            context.WorkflowFileContent = await _github.GetFileContentAsync(owner, repo, path, sha);
+
+            if (context.WorkflowFileContent is null)
+                _log.LogWarning("Workflow dosyası '{Path}' çekilemedi, prompt'a eklenmeyecek.", path);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Workflow dosyası çekilirken hata ({Path}), onsuz devam ediliyor.", path);
+        }
+    }
 
     private async Task<List<WorkflowJob>> GetFailedJobsAsync(string owner, string repo, long runId)
     {

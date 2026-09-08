@@ -752,4 +752,75 @@ public class LlmServiceTests
         Assert.Null(Assert.Single(result.Analyses).AffectedLine);
     }
 
+    // --- Workflow dosyası gösterildiğinde ----------------------------------
+    // Guard tek başına yetmedi. Canlıda ölçüldü (pilot CD run 34194933554):
+    // yapılandırılmış alan temizlendi ama model bu kez düz metne kaçtı —
+    // "Workflow dosyasının 66. satırındaki tenant parametresini kontrol edin".
+    // 66. satır yine bir yorum satırıydı. Guard düz metni denetleyemez, o yüzden
+    // asıl çözüm dosyayı GÖSTERMEK: model artık sayıyı okuyor, uydurmuyor.
+
+    private static ErrorContext ContextWithWorkflowFile(string content) =>
+        new()
+        {
+            JobName = "deploy",
+            FailedStepName = "Azure'a giriş yap",
+            Workflow = new WorkflowInfo("CD", ".github/workflows/cd.yml"),
+            WorkflowFileContent = content,
+            Failures =
+            {
+                new Failure
+                {
+                    Kind = FailureKind.Generic,
+                    JobName = "deploy",
+                    StepName = "Azure'a giriş yap",
+                    Message = "Process completed with exit code 1."
+                }
+            }
+        };
+
+    [Fact]
+    public void StripUnfoundedLines_KeepsLine_WhenTheWorkflowFileWasShown()
+    {
+        var result = ResultWith(".github/workflows/cd.yml", 3);
+        var context = ContextWithWorkflowFile("name: CD\non:\n  push:\njobs:\n  deploy:\n");
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Equal(3, Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void StripUnfoundedLines_DropsLine_WhenItIsPastTheEndOfTheWorkflowFile()
+    {
+        // Dosya gösterilmiş olması her sayıyı meşru kılmaz; 5 satırlık bir
+        // dosyada 66. satır yok.
+        var result = ResultWith(".github/workflows/cd.yml", 66);
+        var context = ContextWithWorkflowFile("name: CD\non:\n  push:\njobs:\n  deploy:\n");
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.Null(Assert.Single(result.Analyses).AffectedLine);
+    }
+
+    [Fact]
+    public void BuildPrompt_ShowsWorkflowFileWithLineNumbers()
+    {
+        // Numarasız verilseydi model satırları saymak zorunda kalırdı.
+        var context = ContextWithWorkflowFile("name: CD\non:\n  push:\n");
+
+        var prompt = LlmService.BuildPrompt(context);
+
+        Assert.Contains(".github/workflows/cd.yml", prompt);
+        Assert.Contains("   1: name: CD", prompt);
+        Assert.Contains("   3:   push:", prompt);
+    }
+
+    [Fact]
+    public void BuildPrompt_OmitsWorkflowFile_WhenItWasNotFetched()
+    {
+        var prompt = LlmService.BuildPrompt(ContextWithFailure(path: null, line: null));
+
+        Assert.DoesNotContain("satır numaralarıyla", prompt);
+    }
+
 }

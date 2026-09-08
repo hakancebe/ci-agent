@@ -17,6 +17,21 @@ public class ErrorContext
     /// </summary>
     public WorkflowInfo? Workflow { get; set; }
 
+    /// <summary>
+    /// <see cref="Workflow"/> dosyasının tam içeriği. Yalnızca hiçbir failure'ın
+    /// konumu bilinmiyorsa çekiliyor — yani yapılandırma/ortam kaynaklı hatalarda,
+    /// modelin işaret edeceği dosyanın workflow dosyası olduğu durumda.
+    ///
+    /// Neden var: canlıda ölçüldü (pilot CD run 34194933554). Model, içeriğini hiç
+    /// görmediği cd.yml için "66. satırdaki tenant parametresini kontrol edin" dedi;
+    /// 66. satır bir yorum satırıydı. Dosyayı göstermek, uydurmayı yasaklamaktan
+    /// daha etkili (aynı ders: <see cref="Workflow"/>).
+    ///
+    /// Test/derleyici hatalarında çekilmiyor: orada konum zaten belli, workflow
+    /// dosyası analize bir şey katmaz, sadece token harcar.
+    /// </summary>
+    public string? WorkflowFileContent { get; set; }
+
     /// <summary>Başarısız adım(lar)ın adı; birden fazlaysa virgülle birleştirilmiş.</summary>
     public required string FailedStepName { get; init; }
 
