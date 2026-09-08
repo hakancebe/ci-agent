@@ -400,6 +400,110 @@ public class CiAnalysisPipelineTests
         Assert.Null(outcome.Context!.WorkflowFileContent);
     }
 
+    // --- .NET dışı dillerde test -> kaynak köprüsü -------------------------
+    // Canlıda ölçüldü (pilot run 34196510936): Python testi patladı, agent
+    // doğru teşhis koydu ama hatayı test dosyasında gösterdi ve "add
+    // fonksiyonunun kodu verilmediği için düzeltme önerilemiyor" dedi.
+    // .NET'te köprü test ADINDAN kuruluyor; Python'da ad yok, failure Generic
+    // geliyor. Tek ipucu logdaki dosya adı.
+
+    private const string PytestLog = """
+    ##[group]Run pytest -q
+    pytest -q
+    ##[endgroup]
+    F.
+    =================================== FAILURES ===================================
+    __________________________ test_add_iki_sayiyi_toplar __________________________
+
+        def test_add_iki_sayiyi_toplar():
+    >       assert add(2, 3) == 5
+    E       assert -1 == 5
+
+    py-app/test_calculator.py:5: AssertionError
+    ##[error]Process completed with exit code 1.
+    """;
+
+    [Fact]
+    public async Task RunAsync_AddsTestedSourceFile_ForPythonFailures()
+    {
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "python-test", "failure", stepName: "Python testleri") },
+            LogsByJobId = { [10] = PytestLog },
+            FilesByPath =
+            {
+                ["py-app/calculator.py"] = "def add(a, b):\n    return a - b\n",
+                ["py-app/test_calculator.py"] = "def test_add(): assert add(2, 3) == 5\n"
+            }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        // Bozuk fonksiyon artık modele gidiyor; test dosyası gitmiyor.
+        Assert.Contains("py-app/calculator.py", outcome.Context!.RelatedSources.Keys);
+        Assert.DoesNotContain("py-app/test_calculator.py", outcome.Context.RelatedSources.Keys);
+        Assert.Contains("return a - b", outcome.Context.RelatedSources["py-app/calculator.py"]);
+    }
+
+    [Fact]
+    public async Task RunAsync_AddsTestedSourceFile_ForJavaScriptFailures()
+    {
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "node-test", "failure", stepName: "Node testleri") },
+            LogsByJobId = { [10] = """
+            ##[group]Run node --test node-app/
+            node --test node-app/
+            ##[endgroup]
+            not ok 1 - add iki sayiyi toplar
+              at Object.<anonymous> (/home/runner/work/p/p/node-app/calculator.test.js:6:10)
+            ##[error]Process completed with exit code 1.
+            """ },
+            FilesByPath = { ["node-app/calculator.js"] = "exports.add = (a, b) => a - b;\n" }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Contains("node-app/calculator.js", outcome.Context!.RelatedSources.Keys);
+    }
+
+    [Fact]
+    public async Task RunAsync_AddsNothing_WhenTheLogHasNoTestFileName()
+    {
+        // Yapılandırma hatasında test dosyası yok; repo ağacı boşuna çekilmemeli.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "deploy", "failure", stepName: "Azure'a giriş yap") },
+            LogsByJobId = { [10] = RestoreLog }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Empty(outcome.Context!.RelatedSources);
+        Assert.Equal(0, gateway.TreeCalls);
+    }
+
+    [Fact]
+    public async Task RunAsync_StillReports_WhenTheTestedSourceFileIsMissingFromTheRepo()
+    {
+        // Köprü bir zenginleştirme, ön koşul değil: dosya yoksa analiz sürmeli.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "python-test", "failure", stepName: "Python testleri") },
+            LogsByJobId = { [10] = PytestLog },
+            RepoPaths = new List<string> { "py-app/test_calculator.py" }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Equal(PipelineStatus.Reported, outcome.Status);
+        Assert.Empty(outcome.Context!.RelatedSources);
+    }
+
     [Fact]
     public async Task RunAsync_ReturnsNoFailedJobs_WhenEveryJobSucceeded()
     {
