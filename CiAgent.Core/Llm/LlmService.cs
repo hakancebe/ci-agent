@@ -74,6 +74,14 @@ public class LlmService
           fixable=false demek "bu hata otomatik düzeltilemez, insan bakmalı"
           demektir ve otomatik düzeltme denemesini TAMAMEN durdurur — yanlış bir
           düzeltmenin commit'lenmesindense durması yeğdir.
+        - fixable=false için bir sinyal daha: düzeltmek bir metot GÖVDESİ, bir
+          arayüz uygulaması ya da iş mantığı yazmayı gerektiriyorsa VE o davranış
+          kodda GÖSTERİLMEMİŞSE. "return 0", boş gövde, "// buraya yaz" türü
+          taslaklar düzeltme DEĞİLDİR; suggestedFix'te bunları önerme, bunun
+          yerine gövdenin/uygulamanın koddan çıkarılamadığını yaz. Aynı hatayı
+          gideren birden fazla meşru yol varsa (ör. bir değişkene değer atamak
+          VEYA null kontrolü eklemek) ve kod hangisinin istendiğini söylemiyorsa,
+          yine fixable=false yap.
         - Patlayan bir testte "Test edilen kod" bölümü verilmişse, hata neredeyse
           her zaman ORADADIR, testte değil. affectedFile'ı o dosya yap ve
           düzeltmeyi orada öner. Testin beklentisini değiştirmeyi ÖNERME.
