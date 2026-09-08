@@ -815,6 +815,32 @@ public class LlmServiceTests
         Assert.Contains("   3:   push:", prompt);
     }
 
+    // Ayrıştırıcı yalnızca .NET biçimlerini tanıyor. .NET dışı dillerde konum
+    // SADECE ham logda duruyor, yani guard'ın tek dayanağı bu eşleştirme.
+    // Her dil konumu farklı yazıyor; hangilerinin geçtiği tahmin değil ölçüm.
+    [Theory]
+    [InlineData("Node/Jest", "  at Object.<anonymous> (/w/node-app/calculator.test.js:6:10)", "node-app/calculator.test.js", 6)]
+    [InlineData("Python", "  File \"/w/app/calculator.py\", line 42, in add", "app/calculator.py", 42)]
+    [InlineData("Java", "\tat com.x.Calculator.add(Calculator.java:42)", "src/Calculator.java", 42)]
+    [InlineData("Go", "    calculator_test.go:42: got 5, want 4", "calculator_test.go", 42)]
+    [InlineData("Rust", "  --> src/lib.rs:42:9", "src/lib.rs", 42)]
+    [InlineData("Ruby", "  /w/app/calculator.rb:42:in `add'", "app/calculator.rb", 42)]
+    [InlineData("PHP/PHPUnit", "/w/src/Calculator.php:42", "src/Calculator.php", 42)]
+    [InlineData("TS/tsc", "src/calc.ts(42,5): error TS2322: Type mismatch", "src/calc.ts", 42)]
+    public void StripUnfoundedLines_KeepsLine_ForCommonLanguageLogFormats(
+        string language, string logLine, string file, int line)
+    {
+        var result = ResultWith(file, line);
+        var context = ContextWithFailure(path: null, line: null);
+        context.RawStepLog = logLine;
+
+        LlmService.StripUnfoundedLines(result, context);
+
+        Assert.True(
+            Assert.Single(result.Analyses).AffectedLine == line,
+            $"{language} biçimindeki konum tanınmadı: {logLine}");
+    }
+
     [Fact]
     public void BuildPrompt_OmitsWorkflowFile_WhenItWasNotFetched()
     {
