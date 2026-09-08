@@ -172,6 +172,13 @@ public class ReportService
     /// Marker biçimi tek yerde tanımlı kalsın diye <see cref="BuildMarker"/>
     /// ile aynı sınıfta duruyor.
     /// </summary>
+    /// <summary>
+    /// Model "düzeltilebilir" dese bile <see cref="FixPolicy"/> o dosyayı
+    /// reddedecekse sebebini döner; sorun yoksa null.
+    /// </summary>
+    private static string? FixablePathProblem(string? affectedFile) =>
+        string.IsNullOrWhiteSpace(affectedFile) ? null : FixPolicy.RejectPath(affectedFile);
+
     internal static long? TryParseRunId(string? body)
     {
         if (string.IsNullOrEmpty(body))
@@ -268,6 +275,20 @@ public class ReportService
                 sb.AppendLine();
                 sb.AppendLine("> 🔒 **Otomatik düzeltilemez** — doğru düzeltme koddan "
                             + "belirlenemiyor, `/fix` bu hatayı denemez. Elle bakılması gerekiyor.");
+            }
+            // İKİNCİ bir "düzeltilemez" sebebi var ve rozetten farklı: düzeltme
+            // belli olabilir ama /fix o DOSYAYA dokunamayabilir (politika yalnızca
+            // .cs'e izin veriyor).
+            //
+            // Bu ayrım v0.7.0'a kadar kendiliğinden gizliydi: .NET dışı dillerde
+            // model kaynağı göremediği için zaten fixable=false diyordu. Köprü
+            // açılınca model "düzeltilebilir" demeye başladı ve rozet kayboldu —
+            // ama /fix hâlâ reddediyor. Söylemezsek okuyucu /fix yazıp ret yer.
+            else if (FixablePathProblem(a.AffectedFile) is string pathProblem)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"> 🔒 **`/fix` bu dosyaya dokunamıyor** — {pathProblem}. "
+                            + "Teşhis geçerli; düzeltmeyi elle uygulamak gerekiyor.");
             }
 
             if (!string.IsNullOrWhiteSpace(a.AffectedFile))
@@ -430,6 +451,8 @@ public class ReportService
 
             if (!a.Fixable)
                 sb.AppendLine("> 🔒 **Otomatik düzeltilemez** — `/fix` bu hatayı denemez.");
+            else if (FixablePathProblem(a.AffectedFile) is string pathProblem)
+                sb.AppendLine($"> 🔒 **`/fix` bu dosyaya dokunamıyor** — {pathProblem}.");
 
             sb.AppendLine();
         }
