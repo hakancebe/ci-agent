@@ -79,6 +79,43 @@ public static class LogParser
         return match.Success ? match.Groups["sha"].Value : null;
     }
 
+    /// <summary>
+    /// Ham logda geçen kaynak dosya ADLARINI toplar (yol değil, yalnızca ad).
+    ///
+    /// Neden yalnızca ad: her dil konumu farklı yazıyor — Python
+    /// `File "/w/x/test_calc.py", line 5`, Java `(CalculatorTest.java:42)`,
+    /// Go `calc_test.go:42:`. Ortak olan tek şey dosyanın adı, ve repo ağacında
+    /// arama zaten ada göre yapılıyor. Yolu ayrıştırmaya çalışmak her dil için
+    /// ayrı kural yazmak demekti.
+    ///
+    /// Kasten gevşek: alakasız bir ad yakalamanın maliyeti yok, çünkü çağıran
+    /// önce "bu bir test dosyası adı mı" (TestSubjectResolver.SubjectFileName)
+    /// sonra "repoda var mı" elemesinden geçiriyor.
+    /// </summary>
+    public static IReadOnlyList<string> ExtractSourceFileNames(string? rawLog)
+    {
+        if (string.IsNullOrWhiteSpace(rawLog))
+            return [];
+
+        try
+        {
+            return SourceFileNameRegex.Matches(rawLog)
+                .Select(m => m.Groups["file"].Value)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return [];
+        }
+    }
+
+    // Uzantı listesi bilinçli olarak kapalı: açık bir "nokta + harfler" kalıbı
+    // logdaki her "1.5" ya da "v2.Method" parçasını dosya adı sanardı.
+    private static readonly Regex SourceFileNameRegex = new(
+        @"(?<file>[A-Za-z0-9_][A-Za-z0-9_.\-]*\.(?:cs|py|js|mjs|cjs|jsx|ts|tsx|go|java|kt|rb|php|rs|swift|scala|dart|c|cc|cpp|h|hpp))(?![A-Za-z0-9_])",
+        RegexOptions.Compiled, matchTimeout: TimeSpan.FromSeconds(2));
+
     private static readonly Regex CheckoutShaRegex = new(
         @"git checkout --progress --force (?<sha>[0-9a-f]{40})(?:\s|$)",
         RegexOptions.Multiline,

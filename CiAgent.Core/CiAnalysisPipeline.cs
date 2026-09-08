@@ -323,7 +323,9 @@ public sealed class CiAnalysisPipeline
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-        if (subjects.Count == 0)
+        var subjectFiles = ResolveSubjectFilesFromLog(context);
+
+        if (subjects.Count == 0 && subjectFiles.Count == 0)
             return;
 
         IReadOnlyList<string> paths;
@@ -339,49 +341,81 @@ public sealed class CiAnalysisPipeline
 
         var totalChars = 0;
 
-        foreach (var subject in subjects)
+        var matches = subjects
+            .SelectMany(subject => TestSubjectResolver.MatchSourceFiles(subject, paths))
+            .Concat(subjectFiles.SelectMany(
+                file => TestSubjectResolver.MatchSourceFilesByName(file, paths)))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var path in matches)
         {
-            foreach (var path in TestSubjectResolver.MatchSourceFiles(subject, paths))
+            if (context.RelatedSources.ContainsKey(path))
+                continue;
+
+            if (context.RelatedSources.Count >= MaxTestSubjectFiles)
+                return;
+
+            try
             {
-                if (context.RelatedSources.ContainsKey(path))
+                if (!cache.TryGetValue(path, out var content))
+                {
+                    content = await _github.GetFileContentAsync(owner, repo, path, headSha);
+                    cache[path] = content;
+                }
+
+                if (content is null)
                     continue;
 
-                if (context.RelatedSources.Count >= MaxTestSubjectFiles)
-                    return;
-
-                try
+                // Tek bir devasa dosya prompt bütçesini yiyebilir. Sınırı aşan
+                // dosyayı EKLEMEMEK, kırpıp eklemekten iyi: kırpılmış içerikte
+                // /fix'in oldText eşleşmesi tutmaz.
+                if (totalChars + content.Length > MaxTestSubjectChars)
                 {
-                    if (!cache.TryGetValue(path, out var content))
-                    {
-                        content = await _github.GetFileContentAsync(owner, repo, path, headSha);
-                        cache[path] = content;
-                    }
-
-                    if (content is null)
-                        continue;
-
-                    // Tek bir devasa dosya prompt bütçesini yiyebilir. Sınırı aşan
-                    // dosyayı EKLEMEMEK, kırpıp eklemekten iyi: kırpılmış içerikte
-                    // /fix'in oldText eşleşmesi tutmaz.
-                    if (totalChars + content.Length > MaxTestSubjectChars)
-                    {
-                        _log.LogInformation(
-                            "'{Path}' bağlama eklenmedi: test edilen kod için boyut sınırı aşılıyor.", path);
-                        continue;
-                    }
-
-                    context.RelatedSources[path] = content;
-                    totalChars += content.Length;
-
                     _log.LogInformation(
-                        "Test edilen kod bağlama eklendi: {Path} ({Subject} için).", path, subject);
+                        "'{Path}' bağlama eklenmedi: test edilen kod için boyut sınırı aşılıyor.", path);
+                    continue;
                 }
-                catch (Exception ex)
-                {
-                    _log.LogError(ex, "Test edilen kod çekilemedi ({Path}), bu dosya olmadan devam ediliyor.", path);
-                }
+
+                context.RelatedSources[path] = content;
+                totalChars += content.Length;
+
+                _log.LogInformation("Test edilen kod bağlama eklendi: {Path}.", path);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Test edilen kod çekilemedi ({Path}), bu dosya olmadan devam ediliyor.", path);
             }
         }
+    }
+
+    /// <summary>
+    /// Ham logda geçen test dosyası adlarından, test edilen kaynak dosyaların
+    /// adlarını çıkarır. <see cref="TestSubjectResolver.SubjectTypeName"/>
+    /// yolunun .NET dışındaki karşılığı.
+    ///
+    /// Neden ayrı bir yol gerekti: .NET'te ayrıştırıcı testin ADINI çıkarıyor
+    /// ("CalculatorTests.Add") ve köprü oradan kuruluyor. Diğer dillerde
+    /// ayrıştırıcı adı çıkaramıyor — failure Generic olarak geliyor, Name null.
+    /// Elimizde kalan tek ipucu logda geçen dosya adları.
+    ///
+    /// Canlıda ölçüldü (pilot run 34196510936): Python'da agent doğru teşhis
+    /// koydu ama hatayı test dosyasında gösterdi ve "add fonksiyonunun kodu
+    /// verilmediği için düzeltme önerilemiyor" dedi.
+    /// </summary>
+    private static List<string> ResolveSubjectFilesFromLog(ErrorContext context)
+    {
+        var logs = context.Failures
+            .Select(f => f.RawEvidence)
+            .Append(context.RawStepLog)
+            .Where(t => !string.IsNullOrWhiteSpace(t));
+
+        return logs
+            .SelectMany(log => LogParser.ExtractSourceFileNames(log))
+            .Select(TestSubjectResolver.SubjectFileName)
+            .Where(n => n is not null)
+            .Select(n => n!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     // --- Adım 3: LLM analizi --------------------------------------------
