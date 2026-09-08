@@ -86,6 +86,13 @@ public class LlmService
         - affectedFile her zaman repo kökünden göreli olmalı. Logda geçen mutlak
           runner yollarını (/home/runner/work/... ile başlayanlar) olduğu gibi
           yazma; repo kökünden sonraki kısmı kullan.
+        - Satır numarasını yalnızca GÖRDÜĞÜN bir yerden al: prompt'ta satır
+          numaralı gösterilen dosya, kod kesiti, ya da logda geçen "dosya:satır".
+          Hiçbirinde yoksa affectedLine'ı null bırak ve suggestedFix metninde de
+          "şu satırı kontrol edin" YAZMA — bunun yerine ilgili ayarın/parametrenin
+          ADINI söyle ("tenant parametresi"). Yanlış satır numarası, olmayan
+          satır numarasından daha kötü: insan tıklar, alakasız bir yere düşer ve
+          sayının uydurma olduğunu anlamaz.
         - Türkçe cevap ver.
         - Yanıtı yalnızca istenen JSON şemasında döndür.
         """;
@@ -288,7 +295,9 @@ public class LlmService
     ///      (derleyici hatası, stack trace)
     ///   2) o dosyanın satır numaralı kod kesiti prompt'a girmiş
     ///   3) o dosyanın tam içeriği prompt'a girmiş (RelatedSources)
-    ///   4) ham log / annotation / kanıt metninde "dosyaAdı ... satır" geçiyor
+    ///   4) workflow dosyası satır numaralı gösterilmiş ve sayı o dosyanın
+    ///      sınırları içinde
+    ///   5) ham log / annotation / kanıt metninde "dosyaAdı ... satır" geçiyor
     ///
     /// (4) olmadan guard doğru sayıları da atardı. Canlıda ölçüldü (pilot CI
     /// run 34132572126): Node testi patladığında konum yalnızca TAP çıktısında
@@ -334,9 +343,32 @@ public class LlmService
         if (context.RelatedSources.Keys.Any(k => Norm(k).Equals(target, StringComparison.OrdinalIgnoreCase)))
             return true;
 
-        // (4) sayı, modele gösterilen düz metinlerden birinde dosya adının
+        // (4) workflow dosyası satır numaralı gösterilmiş — model numarayı
+        // okuyabiliyor. Sayının dosyanın gerçek sınırları içinde olması yeterli;
+        // hangi satırı seçtiği artık analiz kalitesi meselesi, uydurma değil.
+        if (IsWithinShownWorkflowFile(target, line, context))
+            return true;
+
+        // (5) sayı, modele gösterilen düz metinlerden birinde dosya adının
         // hemen yanında geçiyor
         return AppearsInEvidence(target, line, context);
+    }
+
+    private static bool IsWithinShownWorkflowFile(
+        string normalizedFile, int line, ErrorContext context)
+    {
+        static string Norm(string p) => p.Replace('\\', '/').TrimStart('.', '/');
+
+        if (context.WorkflowFileContent is not { Length: > 0 } content)
+            return false;
+
+        if (context.Workflow?.Path is not { Length: > 0 } path)
+            return false;
+
+        if (!Norm(path).Equals(normalizedFile, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return line >= 1 && line <= content.TrimEnd().Split('\n').Length;
     }
 
     /// <summary>
@@ -626,6 +658,18 @@ public class LlmService
     // internal (private değil): AnalyzeAsync'in ölçtüğü uzunluk testlerden
     // doğrudan doğrulanabilsin diye (bkz. AssemblyInfo.cs -> InternalsVisibleTo).
     // Bütçesiz overload = hiçbir şey feda edilmemiş tam prompt.
+    /// <summary>Her satırın başına 1'den başlayan numarasını ekler.</summary>
+    private static string NumberLines(string content)
+    {
+        var lines = content.TrimEnd().Split('\n');
+        var sb = new StringBuilder();
+
+        for (var i = 0; i < lines.Length; i++)
+            sb.AppendLine($"{i + 1,4}: {lines[i].TrimEnd('\r')}");
+
+        return sb.ToString().TrimEnd();
+    }
+
     internal static string BuildPrompt(ErrorContext ctx) => BuildPrompt(ctx, PromptBudget.Full);
 
     internal static string BuildPrompt(ErrorContext ctx, PromptBudget budget)
@@ -715,6 +759,21 @@ public class LlmService
         // failure'ın konumuna bağlı değil: testin çağırdığı, ama hata mesajında
         // adı hiç geçmeyen dosya. Bu blok olmadan model test hatalarında yalnızca
         // testi görüyor ve "bozuk metodu göremiyorum" deyip düzeltmeyi reddediyor.
+        // Workflow dosyası SATIR NUMARALI gösteriliyor. Numarasız verilseydi model
+        // satırları saymak zorunda kalırdı ve saymakta kötü; numarayla birlikte
+        // artık okuyor. Guard da (StripUnfoundedLines) buna dayanarak bu dosya için
+        // satır numarasına izin veriyor.
+        if (budget.IncludeCodeSnippets && ctx.WorkflowFileContent is { Length: > 0 } workflowSource)
+        {
+            sb.AppendLine();
+            sb.AppendLine(
+                $"Bu run'ı çalıştıran workflow dosyasının tam içeriği ({ctx.Workflow?.Path}), "
+                + "satır numaralarıyla:");
+            sb.AppendLine("```");
+            sb.AppendLine(NumberLines(workflowSource));
+            sb.AppendLine("```");
+        }
+
         if (budget.IncludeCodeSnippets && ctx.RelatedSources.Count > 0)
         {
             foreach (var (path, content) in ctx.RelatedSources)

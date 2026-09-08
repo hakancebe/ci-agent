@@ -338,6 +338,68 @@ public class CiAnalysisPipelineTests
         Assert.Null(outcome.Context!.Workflow);
     }
 
+    // Adı vermek yetmedi. Canlıda ölçüldü (pilot CD run 34194933554): dosya adı
+    // doğru geldi ama model, içeriğini hiç görmediği o dosya için "66. satırdaki
+    // tenant parametresini kontrol edin" dedi; 66. satır bir yorum satırıydı.
+    // Çözüm dosyayı göstermek — model artık sayıyı okuyor.
+
+    [Fact]
+    public async Task RunAsync_FetchesWorkflowFile_WhenNoFailureHasALocation()
+    {
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "deploy", "failure", stepName: "Azure'a giriş yap") },
+            LogsByJobId = { [10] = RestoreLog },
+            Workflow = new WorkflowInfo("CD", ".github/workflows/cd.yml"),
+            FilesByPath = { [".github/workflows/cd.yml"] = "name: CD\non:\n  push:\n" }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Contains(".github/workflows/cd.yml", gateway.FileCalls);
+        Assert.Equal("name: CD\non:\n  push:\n", outcome.Context!.WorkflowFileContent);
+    }
+
+    [Fact]
+    public async Task RunAsync_SkipsWorkflowFile_WhenTheFailureAlreadyHasALocation()
+    {
+        // Konum belliyse workflow dosyası analize bir şey katmaz; her run'da
+        // boşuna çekmek token ve API çağrısı harcar.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "build-test", "failure") },
+            LogsByJobId = { [10] = TestLog("CalculatorTests.Add", "src/Calculator.cs", 42) },
+            Workflow = new WorkflowInfo("CI", ".github/workflows/ci.yml"),
+            FilesByPath = { [".github/workflows/ci.yml"] = "name: CI\n" }
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.DoesNotContain(".github/workflows/ci.yml", gateway.FileCalls);
+        Assert.Null(outcome.Context!.WorkflowFileContent);
+    }
+
+    [Fact]
+    public async Task RunAsync_StillReports_WhenTheWorkflowFileCannotBeFetched()
+    {
+        // Dosya çekilemezse analiz eskisi gibi (dosya olmadan) sürmeli.
+        var gateway = new FakeGateway
+        {
+            Jobs = { Job(10, "deploy", "failure", stepName: "Azure'a giriş yap") },
+            LogsByJobId = { [10] = RestoreLog },
+            Workflow = new WorkflowInfo("CD", ".github/workflows/cd.yml"),
+            FileFetchException = new InvalidOperationException("404")
+        };
+
+        var outcome = await new CiAnalysisPipeline(gateway, new FakeLlm(ValidJson), new RecordingReport())
+            .RunAsync("o", "r", 99);
+
+        Assert.Equal(PipelineStatus.Reported, outcome.Status);
+        Assert.Null(outcome.Context!.WorkflowFileContent);
+    }
+
     [Fact]
     public async Task RunAsync_ReturnsNoFailedJobs_WhenEveryJobSucceeded()
     {
