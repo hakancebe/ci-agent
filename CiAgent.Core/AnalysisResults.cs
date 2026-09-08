@@ -25,8 +25,16 @@ public class Analysis
     [JsonPropertyName("affectedFile")]
     public string? AffectedFile { get; init; }
 
+    /// <summary>
+    /// init değil set: LLM yanıtı çözüldükten SONRA doğrulanıyor. Model,
+    /// içeriğini hiç görmediği bir dosya için satır numarası uydurabiliyor —
+    /// canlıda ölçüldü (pilot CD run 34132375477): gerçek bir Azure kimlik
+    /// hatasında ".github/workflows/cd.yml:66" dendi, 66. satır bir YORUM
+    /// satırıydı. Dosya doğruydu, sayı uydurmaydı.
+    /// Bkz. <c>LlmService.StripUnfoundedLines</c>.
+    /// </summary>
     [JsonPropertyName("affectedLine")]
-    public int? AffectedLine { get; init; }
+    public int? AffectedLine { get; set; }
 
     /// <summary>
     /// Doğru düzeltme GÖSTERİLEN koddan belirlenebiliyor mu? false ise /fix hiç
