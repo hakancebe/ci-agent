@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 
 namespace CiAgent.Core;
 
@@ -140,6 +141,19 @@ public sealed class ProjectVerificationRunner : IVerificationRunner
 
     private async Task<VerificationResult> VerifyNodeAsync(string cwd)
     {
+        // package.json yoksa ya da içinde test script'i tanımlı değilse, Node'un
+        // KENDİ test koşucusu doğrudan çağrılıyor. npm'e zorlamak yanlış negatif
+        // üretiyordu: pilot repodaki node-app/ klasöründe package.json yok (CI de
+        // `node --test node-app/` diyor), o yüzden `npm install` ENOENT ile
+        // patlıyor ve doğru bir düzeltme bile "testler geçmedi" sayılıyordu.
+        if (!HasNpmTestScript(cwd))
+        {
+            var direct = await RunAsync("node", "--test", cwd);
+            return direct.Attempted
+                ? new VerificationResult(direct.Succeeded, "=== node --test ===\n" + direct.Output)
+                : direct;
+        }
+
         // `npm ci` kilit dosyası ister; yoksa `npm install`. Bağımlılığı olmayan
         // küçük projelerde ikisi de gereksiz ama zararsız ve hızlı.
         var installCommand = File.Exists(Path.Combine(cwd, "package-lock.json")) ? "ci" : "install";
@@ -156,6 +170,31 @@ public sealed class ProjectVerificationRunner : IVerificationRunner
             ? new VerificationResult(test.Succeeded,
                 $"=== npm {installCommand} ===\nBaşarılı.\n\n=== npm test ===\n" + test.Output)
             : test;
+    }
+
+    /// <summary>
+    /// package.json var VE içinde çalıştırılabilir bir "test" script'i tanımlı mı?
+    /// Bozuk ya da okunamayan dosya "yok" sayılıyor — o durumda Node'un yerleşik
+    /// koşucusuna düşmek, npm'i patlatmaktan iyi.
+    /// </summary>
+    private static bool HasNpmTestScript(string cwd)
+    {
+        var path = Path.Combine(cwd, "package.json");
+        if (!File.Exists(path))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+
+            return document.RootElement.TryGetProperty("scripts", out var scripts)
+                && scripts.TryGetProperty("test", out var test)
+                && !string.IsNullOrWhiteSpace(test.GetString());
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return false;
+        }
     }
 
     private async Task<VerificationResult> VerifyPythonAsync(string cwd)
