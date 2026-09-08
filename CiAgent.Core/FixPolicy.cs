@@ -42,8 +42,16 @@ public static class FixPolicy
         if (segments.Contains(".."))
             return $"repo dışına çıkan yol kabul edilmiyor: '{path}'";
 
-        if (!normalized.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            return $"yalnızca .cs dosyaları düzenlenebilir: '{path}'";
+        // İzin verilen uzantılar, doğrulayıcının ÇALIŞTIRABİLDİĞİ ekosistemlerden
+        // türüyor (EcosystemDetector). İkisi ayrışırsa agent doğrulayamadığı bir
+        // dosyayı düzenlerdi ve "testler geçene kadar düzeltildi sayılmaz"
+        // güvencesi çökerdi.
+        if (!EcosystemDetector.AllEditableExtensions.Any(
+                ext => normalized.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"bu dosya türü düzenlenemiyor: '{path}' "
+                 + $"(desteklenen: {string.Join(", ", EcosystemDetector.AllEditableExtensions)})";
+        }
 
         // Workflow'lar, izinler ve agent'ın kendi tetikleyicileri burada.
         // Agent'ın kendi güvenlik kurallarını değiştirebilmesi kabul edilemez.
@@ -63,30 +71,24 @@ public static class FixPolicy
     {
         var fileName = segments.Length > 0 ? segments[^1] : normalized;
 
-        // "FooTests.cs" / "FooTest.cs" bir test dosyasıdır; ama dosya adının TAMAMI
-        // "Tests.cs" / "Test.cs" ise (önünde ad yok) bu sıradan bir kaynak dosyası
-        // olabilir - src/Core/Tests.cs gibi. Bunu isimden test sayıp /fix'i komple
-        // durdurmak yanlış pozitif üretiyordu; dizin sinyali (aşağıda) zaten daha
-        // güçlü ve gerçek test projelerini yakalıyor.
-        if (HasNamePrefixBefore(fileName, "Tests.cs") || HasNamePrefixBefore(fileName, "Test.cs"))
+        // Ad geleneğinden test dosyası mı? Tespit dile bağımsız ve tek yerde:
+        // "FooTests.cs", "test_foo.py", "foo.test.js", "foo_test.go" hepsi burada
+        // yakalanıyor (TestSubjectResolver). Dosya adının TAMAMI "Tests.cs" ise
+        // (önünde ad yok) test sayılmıyor — src/Core/Tests.cs gibi sıradan bir
+        // kaynak dosyası olabilir; o kural resolver'ın içinde.
+        if (TestSubjectResolver.SubjectFileName(fileName) is not null)
             return true;
 
         // Dizin adında "Tests"/"Test" geçen her şey (CiAgent.Tests/, test/, src/Test/)
         return segments[..^1].Any(s =>
             s.Equals("test", StringComparison.OrdinalIgnoreCase) ||
             s.Equals("tests", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("spec", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("specs", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("__tests__", StringComparison.OrdinalIgnoreCase) ||
             s.EndsWith(".Tests", StringComparison.OrdinalIgnoreCase) ||
             s.EndsWith(".Test", StringComparison.OrdinalIgnoreCase));
     }
-
-    /// <summary>
-    /// <paramref name="fileName"/> <paramref name="suffix"/> ile bitiyor mu VE
-    /// suffix'ten önce en az bir karakter ad var mı? ("FooTests.cs" evet,
-    /// "Tests.cs" hayır.)
-    /// </summary>
-    private static bool HasNamePrefixBefore(string fileName, string suffix) =>
-        fileName.Length > suffix.Length
-        && fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
 
     // --- Yer tutucu (placeholder) koruması --------------------------------
     //

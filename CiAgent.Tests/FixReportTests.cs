@@ -216,4 +216,37 @@ public class FixReportTests
 
         Assert.DoesNotContain("yorumdan çıkar", body);
     }
+
+    // --- "Doğrulanamadı" ile "testler patladı" ayrı cümleler ---------------
+
+    [Fact]
+    public void Body_SaysTheFixIsUnverified_NotThatItWasWrong()
+    {
+        // Kullanıcı bunu "model beceremedi" sanmamalı: eksik olan ortam.
+        var outcome = new FixOutcome(
+            FixStatus.NotVerifiable, "toplama düzeltildi", [Applied()], 1,
+            "'pytest' çalıştırılamadı: komut bulunamadı.");
+
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
+
+        Assert.Contains("doğrulanamadı", body);
+        Assert.Contains("geri alındı", body);
+        // "Testler hâlâ başarısız" DEMEMELİ — testler hiç çalışmadı.
+        Assert.DoesNotContain("hâlâ başarısız", body);
+        // Sebep görünür olmalı ki kullanıcı ne eksik olduğunu anlasın.
+        Assert.Contains("pytest", body);
+    }
+
+    [Fact]
+    public void Body_StillSaysTestsFailed_WhenVerificationActuallyRan()
+    {
+        var outcome = new FixOutcome(
+            FixStatus.VerificationFailed, "denedim", [Applied()], 2,
+            "Failed! - Failed: 1");
+
+        var body = FixReport.BuildBody(outcome, committed: false, commentId: 1);
+
+        Assert.Contains("hâlâ başarısız", body);
+        Assert.DoesNotContain("doğrulanamadı", body);
+    }
 }

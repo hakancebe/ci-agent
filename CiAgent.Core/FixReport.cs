@@ -148,6 +148,15 @@ public static class FixReport
                 + "**Tüm değişiklikler geri alındı.**",
                 "Aşağıdaki doğrulama çıktısına bakın."),
 
+            // "Yanlış düzeltme"den ayrı bir cümle kuruluyor: burada düzeltmenin
+            // doğru olup olmadığını BİLMİYORUZ. Kullanıcı bunu "model beceremedi"
+            // sanmamalı; eksik olan ortam.
+            FixStatus.NotVerifiable => (
+                "Değişiklik uygulandı ama **doğrulanamadı**, bu yüzden geri alındı.",
+                "Agent bir düzeltmeyi yalnızca testleri çalıştırıp geçtiğini görürse bırakıyor. "
+                + "Burada testler hiç çalıştırılamadı, dolayısıyla düzeltmenin doğru olup "
+                + "olmadığı bilinmiyor. Modelin önerisi aşağıda; elle değerlendirebilirsiniz."),
+
             _ => ("Bilinmeyen bir durum oluştu.", "Job loglarını inceleyin.")
         };
 
@@ -179,10 +188,15 @@ public static class FixReport
             sb.AppendLine();
         }
 
-        if (outcome.Status == FixStatus.VerificationFailed && outcome.VerificationOutput is not null)
+        if (outcome.Status is FixStatus.VerificationFailed or FixStatus.NotVerifiable
+            && outcome.VerificationOutput is not null)
         {
+            var detailsTitle = outcome.Status == FixStatus.NotVerifiable
+                ? "Doğrulama neden çalıştırılamadı"
+                : "Doğrulama çıktısı";
+
             sb.AppendLine("<details>");
-            sb.AppendLine("<summary>Doğrulama çıktısı</summary>");
+            sb.AppendLine($"<summary>{detailsTitle}</summary>");
             sb.AppendLine();
             sb.AppendLine("```");
             sb.AppendLine(new VerificationResult(false, outcome.VerificationOutput).Tail(3_000));

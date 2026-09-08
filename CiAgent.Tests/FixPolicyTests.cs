@@ -326,4 +326,74 @@ public class FixPolicyTests
 
         Assert.Equal(0, FixPolicy.UncommentedCodeLineCount(edit));
     }
+
+    // --- .NET dışı diller --------------------------------------------------
+    // /fix v0.8.0'a kadar yalnızca .cs düzenleyebiliyordu. Sınır teknik değil
+    // ilkeseldi: agent bir düzeltmeyi ancak testleri çalıştırıp geçtiğini
+    // görürse bırakıyor ve o testleri çalıştıracak araç yoktu. Araçlar image'a
+    // girince (Python, Node) sınır da o listeye göre yeniden çizildi.
+
+    [Theory]
+    [InlineData("src/Calculator.cs")]
+    [InlineData("py-app/calculator.py")]
+    [InlineData("node-app/calculator.js")]
+    [InlineData("src/calculator.mjs")]
+    [InlineData("src/components/Button.tsx")]
+    [InlineData("src/util.ts")]
+    public void RejectPath_AllowsSourceFilesOfVerifiableEcosystems(string path)
+    {
+        Assert.Null(FixPolicy.RejectPath(path));
+    }
+
+    [Theory]
+    [InlineData("internal/calculator.go")]   // Go aracı image'da yok
+    [InlineData("src/Calculator.java")]
+    [InlineData("src/lib.rs")]
+    [InlineData("app/calculator.rb")]
+    [InlineData("config/settings.yml")]
+    public void RejectPath_StillRefusesEcosystemsWeCannotVerify(string path)
+    {
+        // Doğrulayamadığımız yerde düzenleme de yok: "LLM ne derse onu commit et"
+        // olurdu. Analiz bu dillerde yine çalışıyor, rapor da bunu söylüyor.
+        Assert.Contains("düzenlenemiyor", FixPolicy.RejectPath(path));
+    }
+
+    [Theory]
+    [InlineData("py-app/test_calculator.py")]
+    [InlineData("node-app/calculator.test.js")]
+    [InlineData("src/Button.spec.tsx")]
+    [InlineData("tests/CalculatorTests.cs")]
+    public void RejectPath_RefusesTestFiles_InEveryLanguage(string path)
+    {
+        // Bir hatayı "düzeltmenin" en kolay yolu testi zayıflatmaktır. Bu yasak
+        // dile göre gevşememeli — yoksa .NET dışında agent kendi sınavını yazar.
+        Assert.NotNull(FixPolicy.RejectPath(path));
+    }
+
+    [Theory]
+    [InlineData("__tests__/calculator.js")]
+    [InlineData("spec/calculator.js")]
+    [InlineData("specs/calculator.py")]
+    public void RejectPath_RefusesTestDirectories_InEveryLanguage(string path)
+    {
+        Assert.Contains("test dosyaları", FixPolicy.RejectPath(path));
+    }
+
+    [Fact]
+    public void RejectPath_StillRefusesWorkflowFiles()
+    {
+        // Agent'ın kendi tetikleyicilerini ve izinlerini değiştirebilmesi
+        // kabul edilemez; uzantı listesi genişledi diye bu gevşememeli.
+        Assert.NotNull(FixPolicy.RejectPath(".github/workflows/ci.yml"));
+    }
+
+    [Theory]
+    [InlineData("../../etc/passwd.py")]
+    [InlineData("/etc/hosts.py")]
+    public void RejectPath_StillRefusesEscapingPaths_EvenWithAllowedExtensions(string path)
+    {
+        // En kritik kural. Uzantı listesi genişlerken bunun kapsam dışı kalması
+        // sessiz bir güvenlik açığı olurdu.
+        Assert.NotNull(FixPolicy.RejectPath(path));
+    }
 }

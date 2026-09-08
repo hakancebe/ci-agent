@@ -1,9 +1,17 @@
 # CiAgent — tek image, iki çalışma modu (web / cli).
 #
 # Neden final katman da SDK, ince `aspnet` runtime değil?
-#   /fix modu klonladığı HEDEF repoda `dotnet build` + `dotnet test` çalıştırıp
-#   düzeltmenin gerçekten işe yaradığını doğruluyor (CiAgent.Core/BuildRunner.cs).
-#   Yani container'ın kendisi bir build makinesi; tam SDK ve `git` şart.
+#   /fix modu klonladığı HEDEF repoda testleri çalıştırıp düzeltmenin gerçekten
+#   işe yaradığını doğruluyor (CiAgent.Core/BuildRunner.cs). Yani container'ın
+#   kendisi bir build makinesi; tam SDK ve `git` şart.
+#
+# Neden Python ve Node de kurulu?
+#   Aynı sebep, başka diller için. Agent bir düzeltmeyi ancak testleri çalıştırıp
+#   geçtiğini GÖRÜRSE bırakıyor; aracı olmayan dilde /fix "LLM ne derse onu
+#   commit et" olurdu. O yüzden düzenlemeye izin verilen uzantı listesi ile bu
+#   image'da kurulu araçlar aynı kaynaktan türüyor (EcosystemDetector).
+#   Go/Java/Rust bilerek YOK: ölçülmediler ve her biri image'ı belirgin biçimde
+#   büyütür. Onlarda analiz çalışıyor, /fix "doğrulanamıyor" diyip geri alıyor.
 #
 # Peki multi-stage neden hâlâ anlamlı?
 #   Kaynak ağacı, NuGet ara çıktıları ve test projesi final image'a sızmasın diye.
@@ -42,15 +50,25 @@ RUN dotnet publish CiAgent.Service/CiAgent.Service.csproj -c Release -o /out/ser
 # -------------------------------------------------------------- runtime ----
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS runtime
 
-# git, /fix'in klon + commit + push adımları için zorunlu (GitWorkspace.cs `git`
-# binary'sini Process ile çağırıyor). SDK image'ında kurulu geliyor; yine de
-# kontrol ediyoruz — eksik olsaydı image build'i değil, aylar sonraki ilk /fix
-# çalışması patlardı.
-RUN if ! command -v git >/dev/null 2>&1; then \
-        apt-get update \
-     && apt-get install -y --no-install-recommends git \
-     && rm -rf /var/lib/apt/lists/*; \
-    fi
+# git: /fix'in klon + commit + push adımları için zorunlu (GitWorkspace.cs `git`
+# binary'sini Process ile çağırıyor). SDK image'ında zaten geliyor ama açıkça
+# istiyoruz — base image hareketli bir tag, varsayıma güvenmiyoruz.
+#
+# python3-pytest sistem genelinde kurulu: requirements.txt'i olmayan küçük
+# projelerde de testler çalışabilsin diye.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        git \
+        python3 python3-pip python3-pytest \
+        nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+
+# Araçların gerçekten çağrılabildiğini image build'inde kanıtlıyoruz. Eksik
+# olsalardı hata aylar sonraki ilk /fix çalışmasında çıkardı — orada teşhis
+# etmek çok daha pahalı.
+RUN git --version && python3 --version && pip3 --version \
+ && node --version && npm --version \
+ && python3 -m pytest --version
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \

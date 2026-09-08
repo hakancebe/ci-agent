@@ -430,4 +430,63 @@ public sealed class FixPipelineTests : IDisposable
         Assert.Equal("src/Calc.cs", Assert.Single(outcome.AppliedEdits).File);
         Assert.Equal(original, await File.ReadAllTextAsync(path));
     }
+
+    // --- Doğrulanamayan düzeltme -------------------------------------------
+    // /fix'in tek gerçek güvencesi "değişiklikten SONRA testler geçiyor"
+    // cümlesi. Testler HİÇ çalıştırılamadıysa o cümle kurulamaz — ve bu,
+    // "testler patladı"dan farklı bir durum: orada düzeltmenin yanlış olduğunu
+    // biliyoruz, burada doğru olup olmadığını bilmiyoruz.
+
+    private static readonly VerificationResult CannotVerify =
+        VerificationResult.NotAttempted("'pytest' çalıştırılamadı: komut bulunamadı.");
+
+    [Fact]
+    public async Task RunAsync_RevertsEverything_WhenVerificationCannotRunAtAll()
+    {
+        const string original = "def add(a, b):\n    return a - b\n";
+        var path = WriteFile("app/calculator.py", original);
+
+        var llm = new ScriptedLlm(
+            Proposal("düzelt", ("app/calculator.py", "a - b", "a + b")));
+
+        var outcome = await new FixPipeline(llm, new ScriptedVerifier(CannotVerify))
+            .RunAsync(Context(), Analysis("app/calculator.py"), _root);
+
+        Assert.Equal(FixStatus.NotVerifiable, outcome.Status);
+        // Asıl güvence: dosya diskte ESKİ haliyle kalmalı. Doğrulanmamış bir
+        // düzeltmeyi bırakmak /fix'in var oluş sebebini ortadan kaldırırdı.
+        Assert.Equal(original, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotRetry_WhenVerificationCannotRunAtAll()
+    {
+        // Eksik olan modelin önerisi değil, ORTAM. Tekrar denemek aynı duvara
+        // toslamak ve boşuna LLM çağrısı yapmak olurdu.
+        var llm = new ScriptedLlm(
+            Proposal("düzelt", ("app/calculator.py", "a - b", "a + b")));
+        WriteFile("app/calculator.py", "def add(a, b):\n    return a - b\n");
+
+        var outcome = await new FixPipeline(llm, new ScriptedVerifier(CannotVerify))
+            .RunAsync(Context(), Analysis("app/calculator.py"), _root);
+
+        Assert.Equal(1, llm.CallCount);
+        Assert.Equal(1, outcome.Attempts);
+    }
+
+    [Fact]
+    public async Task RunAsync_FixesPythonFile_WhenVerificationPasses()
+    {
+        // Uçtan uca: .NET dışı bir dosya artık gerçekten düzeltilebiliyor.
+        var path = WriteFile("app/calculator.py", "def add(a, b):\n    return a - b\n");
+
+        var llm = new ScriptedLlm(
+            Proposal("toplama düzeltildi", ("app/calculator.py", "a - b", "a + b")));
+
+        var outcome = await new FixPipeline(llm, new ScriptedVerifier(Pass))
+            .RunAsync(Context(), Analysis("app/calculator.py"), _root);
+
+        Assert.Equal(FixStatus.Fixed, outcome.Status);
+        Assert.Contains("a + b", File.ReadAllText(path));
+    }
 }

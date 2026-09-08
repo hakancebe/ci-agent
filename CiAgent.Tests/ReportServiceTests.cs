@@ -643,11 +643,13 @@ public class ReportServiceTests
     [Fact]
     public void Report_WarnsThatFixCannotTouchTheFile_WhenPolicyRejectsIt()
     {
+        // Go, doğrulayıcının çalıştırabildiği ekosistemler arasında değil; /fix
+        // dokunamaz. Analiz yine de doğru olabilir, rapor da onu gösteriyor.
         var body = ReportService.BuildCommentBody(
-            FixableAnalysisFor("py-app/calculator.py"), SampleContext(), runId: 42);
+            FixableAnalysisFor("internal/calculator.go"), SampleContext(), runId: 42);
 
         Assert.Contains("dokunamıyor", body);
-        Assert.Contains("yalnızca .cs", body);
+        Assert.Contains("düzenlenemiyor", body);
     }
 
     [Fact]
@@ -674,7 +676,7 @@ public class ReportServiceTests
                 {
                     Title = "t", RootCause = "r", SuggestedFix = "f",
                     Confidence = "high", Fixable = false,
-                    AffectedFile = "py-app/calculator.py"
+                    AffectedFile = "internal/calculator.go"
                 }
             }
         };
